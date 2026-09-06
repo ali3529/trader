@@ -1,6 +1,8 @@
 import { createCipheriv, createDecipheriv, createHmac, randomBytes, createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync } from "node:fs";
 import { join } from "node:path";
+import { lookup as dnsLookup } from "node:dns";
+import { Agent, fetch as undiciFetch } from "undici";
 
 /**
  * لایه امن نوبیتکس — فقط سمت سرور.
@@ -88,6 +90,98 @@ export function baseUrl(sandbox: boolean): string {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+const errDetail = (err: unknown): string => {
+  const e = err as Error & { cause?: { code?: string; message?: string } };
+  const cause = e?.cause?.code ?? e?.cause?.message;
+  return cause ? `${e.message} [${cause}]` : e?.message ?? String(err);
+};
+
+/**
+ * دور زدن بلوک DNS: برخی شبکه‌ها (مثل محیط پیش‌نمایش) دامنهٔ nobitex.ir را در DNS سیستم
+ * بلاک می‌کنند (ENOTFOUND) ولی اینترنت و DoH باز است. پس دامنه‌های نوبیتکس را با
+ * DNS-over-HTTPS resolve می‌کنیم و با همان IP (و SNI صحیح) متصل می‌شویم.
+ */
+const dohCache = new Map<string, { ips: string[]; expires: number }>();
+
+const DOH_PROVIDERS: { name: string; url: (h: string) => string; headers?: Record<string, string> }[] = [
+  { name: "google", url: (h) => `https://dns.google/resolve?name=${encodeURIComponent(h)}&type=A` },
+  {
+    name: "cloudflare",
+    url: (h) => `https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(h)}&type=A`,
+    headers: { Accept: "application/dns-json" },
+  },
+  { name: "quad9", url: (h) => `https://dns.quad9.net:5053/dns-query?name=${encodeURIComponent(h)}&type=A` },
+];
+
+async function resolveViaDoh(host: string): Promise<string[]> {
+  const now = Date.now();
+  const hit = dohCache.get(host);
+  if (hit && hit.expires > now) return hit.ips;
+  let lastErr: Error = new Error(`DoH: no provider answered for ${host}`);
+  for (const p of DOH_PROVIDERS) {
+    try {
+      const res = await fetch(p.url(host), { headers: p.headers, signal: AbortSignal.timeout(8000) });
+      const json = (await res.json()) as {
+        Status?: number;
+        Answer?: { type: number; data: string }[];
+      };
+      const ips = (json.Answer ?? []).filter((a) => a.type === 1).map((a) => a.data);
+      console.log(`[doh:${p.name}] ${host} -> status=${json.Status} answers=${(json.Answer ?? []).length} ips=${ips.join(",") || "none"}`);
+      if (ips.length > 0) {
+        dohCache.set(host, { ips, expires: now + 300_000 });
+        return ips;
+      }
+      lastErr = new Error(`DoH(${p.name}): status=${json.Status}, no A record`);
+    } catch (err) {
+      console.log(`[doh:${p.name}] ${host} -> ${errDetail(err)}`);
+      lastErr = err as Error;
+    }
+  }
+  throw lastErr;
+}
+
+type LookupCb = (err: Error | null, address: string, family: number) => void;
+
+const nobitexAgent = new Agent({
+  connect: {
+    lookup: (hostname: string, _opts: unknown, cb: LookupCb) => {
+      if (!hostname.endsWith("nobitex.ir")) {
+        dnsLookup(hostname, {}, (err, address, family) => cb(err as Error | null, address, family));
+        return;
+      }
+      resolveViaDoh(hostname)
+        .then((ips) => cb(null, ips[0], 4))
+        .catch((err) => cb(err as Error, "", 4));
+    },
+  },
+});
+
+/** fetch با dispatcher سفارشی — فقط برای درخواست‌های نوبیتکس */
+function nFetch(url: string, init: Parameters<typeof undiciFetch>[1]): ReturnType<typeof undiciFetch> {
+  return undiciFetch(url, { ...init, dispatcher: nobitexAgent });
+}
+
+/** بررسی یک‌بارهٔ اتصال: اینترنت عمومی، DNS-over-HTTPS و خود نوبیتکس — فقط برای تشخیص */
+let probed = false;
+async function probeNetwork(): Promise<void> {
+  if (probed) return;
+  probed = true;
+  const targets = [
+    "https://example.com/",
+    "https://dns.google/resolve?name=api.nobitex.ir&type=A",
+    "https://api.nobitex.ir/market/udf/config",
+  ];
+  for (const t of targets) {
+    const s = Date.now();
+    try {
+      const r = await fetch(t, { signal: AbortSignal.timeout(8000) });
+      console.log(`[net-probe] ${t} -> HTTP ${r.status} in ${Date.now() - s}ms`);
+    } catch (e) {
+      console.log(`[net-probe] ${t} -> FAILED in ${Date.now() - s}ms | ${errDetail(e)}`);
+    }
+  }
+}
+
 /** درخواست عمومی با Rate Limit: حداکثر ۳ تلاش مجدد با ۳۰ ثانیه مکث */
 export async function publicGet(path: string, params: Record<string, string>, sandbox = false): Promise<unknown> {
   const qs = new URLSearchParams(params).toString();
@@ -96,7 +190,7 @@ export async function publicGet(path: string, params: Record<string, string>, sa
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     const started = Date.now();
     try {
-      const res = await fetch(url, { headers: { Accept: "application/json" } });
+      const res = await nFetch(url, { headers: { Accept: "application/json" } });
       const latency = Date.now() - started;
       const text = await res.text().catch(() => "");
       console.log(`[nobitex] GET ${url} -> HTTP ${res.status} in ${latency}ms | body: ${text.slice(0, 200)}`);
@@ -110,7 +204,8 @@ export async function publicGet(path: string, params: Record<string, string>, sa
       }
       return JSON.parse(text);
     } catch (err) {
-      console.log(`[nobitex] GET ${url} -> FAILED in ${Date.now() - started}ms | ${(err as Error).message}`);
+      console.log(`[nobitex] GET ${url} -> FAILED in ${Date.now() - started}ms | ${errDetail(err)}`);
+      await probeNetwork();
       lastErr = err;
       // مکث ۳۰ ثانیه‌ای فقط برای Rate Limit (429)؛ خطاهای شبکه با مکث کوتاه تلاش مجدد می‌شوند
       if (attempt < MAX_RETRIES) await sleep(1000 * attempt);
@@ -148,13 +243,14 @@ export async function privateRequest(
   const url = `${baseUrl(keys.sandbox)}/api${path}${queryString}`;
   let lastErr: unknown;
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    const started = Date.now();
     // nonce تازه برای هر تلاش — امضا طبق مستندات روی (query string + body + nonce) محاسبه می‌شود
     const nonce = Date.now().toString();
     const signature = createHmac("sha512", keys.apiSecret)
       .update(queryString + bodyStr + nonce)
       .digest("hex");
     try {
-      const res = await fetch(url, {
+      const res = await nFetch(url, {
         method,
         headers: {
           "Content-Type": "application/json",
@@ -179,6 +275,7 @@ export async function privateRequest(
       }
       return json;
     } catch (err) {
+      console.log(`[nobitex] ${method} ${url} -> FAILED in ${Date.now() - started}ms | ${errDetail(err)}`);
       lastErr = err;
       // مکث ۳۰ ثانیه‌ای فقط برای Rate Limit (429)؛ خطاهای شبکه با مکث کوتاه تلاش مجدد می‌شوند
       if (attempt < MAX_RETRIES) await sleep(1000 * attempt);
