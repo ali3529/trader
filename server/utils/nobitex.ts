@@ -112,7 +112,8 @@ export async function publicGet(path: string, params: Record<string, string>, sa
     } catch (err) {
       console.log(`[nobitex] GET ${url} -> FAILED in ${Date.now() - started}ms | ${(err as Error).message}`);
       lastErr = err;
-      if (attempt < MAX_RETRIES) await sleep(RETRY_DELAY_MS);
+      // مکث ۳۰ ثانیه‌ای فقط برای Rate Limit (429)؛ خطاهای شبکه با مکث کوتاه تلاش مجدد می‌شوند
+      if (attempt < MAX_RETRIES) await sleep(1000 * attempt);
     }
   }
   throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
@@ -179,7 +180,8 @@ export async function privateRequest(
       return json;
     } catch (err) {
       lastErr = err;
-      if (attempt < MAX_RETRIES) await sleep(RETRY_DELAY_MS);
+      // مکث ۳۰ ثانیه‌ای فقط برای Rate Limit (429)؛ خطاهای شبکه با مکث کوتاه تلاش مجدد می‌شوند
+      if (attempt < MAX_RETRIES) await sleep(1000 * attempt);
     }
   }
   throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
