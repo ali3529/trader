@@ -17,3 +17,67 @@ Available packages and libraries:
 - You ALREADY have ALL the shadcn/ui components and their dependencies installed. So you don't need to install them again.
 - You have ALL the necessary Radix UI components installed.
 - Use prebuilt components from the shadcn/ui library after importing them. Note that these files shouldn't be edited, so make new components if you need to change them.
+
+## تریدبان — Project Conventions
+
+- Persian RTL trading bot for Nobitex; dark terminal UI (see `src/globals.css` tokens: profit/loss/warn).
+- **Paper trading is the default.** Real trading requires the user's explicit confirmation (`ENABLE-REAL-TRADING`). Never weaken this gate.
+- **API keys live only server-side** (`server/utils/nobitex.ts`, AES-256-GCM in `.tradeban/`, git-ignored). NEVER hardcode keys or import `node:crypto`/server code from `src/`.
+- Pure strategy/risk/backtest logic lives in `src/lib/` (no UI, no network); UI reads engine state via `src/context/BotContext.tsx` only.
+- All strategy thresholds are adjustable through `src/lib/config.ts` — don't hardcode numbers elsewhere.
+- Nobitex API (official docs apidocs.nobitex.ir/spot_trade): candlestore `from`/`to` in **unix seconds** (server proxy converts ms↔s); orderbook is path-based `/market/orderbook/{SYMBOL}`; order POST uses **lowercase** symbol + `orderType: LIMIT|MARKET`; cancel is `DELETE /api/orders/{id}`; balances at `/api/users/wallets/balance`; auth headers `A-Key`/`A-Signature`/`A-Nonce`, signature = HMAC-SHA512(secret, queryString + body + nonce); success responses use `status: "OK"`.
+- Rate limiting: ≥12s between API requests, ≤3 retries with 30s delay on 429 (global queue in `src/lib/engine/api.ts`).
+- Backtest must use closed candles only (no look-ahead).
+- Tests: Vitest in `src/lib/__tests__/` (`pnpm test`).
+
+<!-- nitro:start -->
+
+## Nitro Server Layer
+
+This project has a Nitro server layer for backend API routes. A `nitro.config.ts` at the app root sets `serverDir: "./server"` — do not move or remove it.
+
+### vite.config.ts
+
+`vite.config.ts` already imports `nitro` from `"nitro/vite"` and registers `nitro()` as the LAST entry in the `plugins` array. Do not move it earlier — it must run after Vite's module-transform middleware, otherwise Nitro's SPA fallback intercepts Vite internal URLs (`/src/*.tsx`, `/@vite/client`, `/@react-refresh`, `/@fs/*`) and returns `index.html`, breaking the preview.
+
+### API Route Conventions
+
+- Write routes in `server/routes/api/` (NEVER top-level `/api/`).
+- Dynamic routes: `[param].ts`. Method-specific: `hello.get.ts`, `hello.post.ts`.
+- Runtime config: `useRuntimeConfig()` (env vars prefixed with `NITRO_`).
+
+### Imports — read carefully
+
+Imports come from two different sources:
+
+- `defineHandler` and `useRuntimeConfig` are imported from **`"nitro"`**.
+- **Every request/response helper comes from `"nitro/h3"`** — Nitro v3 re-exports h3 utilities through that subpath. Common ones: `readBody`, `readValidatedBody`, `getQuery`, `getRouterParam`, `getRouterParams`, `createError`, `sendError`, `setResponseStatus`, `getRequestHeaders`, `getRequestURL`, `setCookie`, `getCookie`, `deleteCookie`.
+
+Worked example — `server/routes/api/todos.post.ts`:
+
+```ts
+import { defineHandler } from "nitro";
+import { readBody, createError } from "nitro/h3";
+
+export default defineHandler(async (event) => {
+  const body = await readBody<{ title?: string }>(event);
+  if (!body?.title) {
+    throw createError({ statusCode: 400, statusMessage: "title is required" });
+  }
+  return { ok: true, title: body.title };
+});
+```
+
+### Server-side packages
+
+Any package used inside `server/` (database drivers like `@neondatabase/serverless`, auth SDKs, third-party API clients) must be in `package.json`. Add it before writing the first server file that imports it. NEVER import these from `src/` — code under `src/` ships to the browser, so importing server packages there leaks them and usually breaks the build.
+
+### Common mistakes
+
+- `import { readBody } from "nitro"` → wrong. h3 utilities are not exported from `"nitro"`. Use `"nitro/h3"`.
+- `import { readBody } from "h3"` → wrong. Even though Nitro is built on h3, you import through `"nitro/h3"` (the version Nitro re-exports), not `"h3"` directly.
+- `nitro()` placed before `react()` in `plugins` → wrong. Must be the LAST entry, otherwise the SPA fallback intercepts Vite internals.
+- Omitting `nitro()` from `vite.config.ts` entirely → `/api/*` returns `index.html` instead of JSON.
+- Importing server-only packages or referencing server-only env vars (`process.env.DATABASE_URL`, secrets) from `src/` → wrong. The Vite client bundle is public; this leaks them. Server code lives in `server/` only.
+
+<!-- nitro:end -->

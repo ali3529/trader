@@ -29,3 +29,7 @@ dist-ssr
 /playwright/.cache/
 .last-run.json
 .dyad/
+
+# تریدبان — کلیدهای رمزنگاری‌شده API و کلید اصلی هرگز commit نشوند
+.tradeban/
+.env
