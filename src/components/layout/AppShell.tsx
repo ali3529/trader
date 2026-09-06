@@ -17,6 +17,7 @@ import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { Badge } from "@/components/ui/badge";
 import { Logo } from "@/components/brand/Logo";
 import { useEngine, useEngineState } from "@/context/BotContext";
+import { useDataSource } from "@/hooks/useDataSource";
 import { cn } from "@/lib/utils";
 import { formatTime } from "@/lib/format";
 
@@ -33,6 +34,7 @@ const NAV = [
 function StatusStrip() {
   const engine = useEngine();
   const stats = useEngineState((e) => e.stats());
+  const dataSource = useDataSource();
 
   return (
     <div className="flex flex-wrap items-center gap-2">
@@ -45,6 +47,14 @@ function StatusStrip() {
       >
         {stats.mode === "real" ? "معامله واقعی" : "Paper Trading"}
       </Badge>
+      {dataSource === "demo" ? (
+        <Badge
+          className="rounded-full bg-warn/15 px-3 py-1 text-xs text-warn"
+          title="سرور پیش‌نمایش به api.nobitex.ir دسترسی ندارد؛ دادهٔ نمایش‌داده‌شده شبیه‌سازی‌شده است. روی سیستم خودتان (شبکه ایران) داده واقعی جایگزین می‌شود."
+        >
+          داده شبیه‌سازی‌شده — نوبیتکس در دسترس نیست
+        </Badge>
+      ) : null}
       <Badge variant="outline" className="rounded-full border-border/70 px-3 py-1 text-xs text-muted-foreground">
         <span className={cn("ml-1.5 inline-block h-2 w-2 rounded-full", stats.running ? "animate-pulse bg-profit" : "bg-muted-foreground/50")} />
         {stats.running ? "در حال پایش بازار" : "متوقف"}

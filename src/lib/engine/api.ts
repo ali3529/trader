@@ -102,6 +102,32 @@ interface NobitexCandleResponse {
   low: number[];
   close: number[];
   volume: number[];
+  source?: "live" | "demo";
+}
+
+/** منبع دادهٔ بازار: live = نوبیتکس واقعی، demo = شبیه‌سازی‌شده (نوبیتکس در دسترس نیست) */
+export type DataSource = "live" | "demo" | "unknown";
+
+let dataSource: DataSource = "unknown";
+const dsListeners = new Set<(s: DataSource) => void>();
+
+export function getDataSource(): DataSource {
+  return dataSource;
+}
+
+export function onDataSource(fn: (s: DataSource) => void): () => void {
+  dsListeners.add(fn);
+  return () => dsListeners.delete(fn);
+}
+
+function setDataSource(s: DataSource): void {
+  if (s === dataSource) return;
+  dataSource = s;
+  dsListeners.forEach((fn) => fn(s));
+}
+
+function trackSource(source?: "live" | "demo"): void {
+  setDataSource(source === "demo" ? "demo" : "live");
 }
 
 /** دریافت کندل‌ها از پروکسی سرور (کلیدها هرگز در فرانت‌اند نیستند) */
@@ -113,6 +139,7 @@ export async function fetchCandles(
 ): Promise<Candle[]> {
   const qs = new URLSearchParams({ symbol, resolution, from: String(from), to: String(to) });
   const data = await apiGet<NobitexCandleResponse>(`/api/market/candles?${qs}`);
+  trackSource(data.source);
   const out: Candle[] = (data.time ?? []).map((t, i) => ({
     time: t,
     open: data.open[i],
@@ -125,5 +152,9 @@ export async function fetchCandles(
 }
 
 export async function fetchOrderBook(symbol: string): Promise<{ asks: number[][]; bids: number[][] }> {
-  return apiGet(`/api/market/orderbook?symbol=${encodeURIComponent(symbol)}`);
+  const data = await apiGet<{ asks: number[][]; bids: number[][]; source?: "live" | "demo" }>(
+    `/api/market/orderbook?symbol=${encodeURIComponent(symbol)}`
+  );
+  trackSource(data.source);
+  return { asks: data.asks, bids: data.bids };
 }

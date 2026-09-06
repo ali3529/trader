@@ -1,6 +1,7 @@
 import { defineHandler } from "nitro";
 import { getQuery, createError } from "nitro/h3";
 import { publicGet, assertValidSymbol } from "../../../utils/nobitex";
+import { demoCandles } from "../../../utils/demoData";
 
 const VALID_RESOLUTIONS = new Set(["60", "300", "900", "1800", "3600", "14400", "86400"]);
 
@@ -25,12 +26,20 @@ export default defineHandler(async (event) => {
 
   // مستندات نوبیتکس: from/to در candlestore/light بر حسب ثانیه یونیکس هستند؛
   // فرانت‌اند میلی‌ثانیه می‌فرستد، پس تبدیل می‌کنیم و زمان پاسخ را به میلی‌ثانیه برمی‌گردانیم.
-  const raw = (await publicGet("/market/candlestore/light", {
-    symbol,
-    resolution,
-    from: String(Math.floor(from / 1000)),
-    to: String(Math.floor(to / 1000)),
-  })) as RawCandles[] | RawCandles;
+  let raw: RawCandles[] | RawCandles;
+  try {
+    raw = (await publicGet("/market/candlestore/light", {
+      symbol,
+      resolution,
+      from: String(Math.floor(from / 1000)),
+      to: String(Math.floor(to / 1000)),
+    })) as RawCandles[] | RawCandles;
+  } catch (err) {
+    // نوبیتکس از این شبکه در دسترس نیست (مثلاً محیط پیش‌نمایش خارج از ایران) —
+    // به‌جای شکست کامل، داده شبیه‌سازی‌شدهٔ برچسب‌دار برمی‌گردد.
+    console.log(`[nobitex] upstream unreachable for ${symbol} (${(err as Error).message}) -> demo data`);
+    return demoCandles(symbol, Number(resolution), from, to);
+  }
 
   const data: RawCandles = Array.isArray(raw) ? (raw[0] ?? {}) : raw;
   const nums = (arr: number[] | undefined) => (arr ?? []).map(Number);
@@ -47,5 +56,6 @@ export default defineHandler(async (event) => {
     low: nums(data.low),
     close: nums(data.close),
     volume: nums(data.volume),
+    source: "live" as const,
   };
 });
