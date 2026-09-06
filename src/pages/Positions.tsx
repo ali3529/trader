@@ -10,6 +10,8 @@ export default function Positions() {
   const engine = useEngine();
   const positions = useEngineState((e) => e.positions.slice());
   const scans = useEngineState((e) => ({ ...e.scans }));
+  const mode = useEngineState((e) => e.mode);
+  const exchangeOrders = useEngineState((e) => (e.account?.openOrders ?? []).slice()) as Array<Record<string, unknown>>;
 
   return (
     <div className="space-y-4">
@@ -103,6 +105,49 @@ export default function Positions() {
           );
         })}
       </div>
+
+      {mode === "real" ? (
+        <Card className="border-loss/30">
+          <CardContent className="space-y-3 p-4">
+            <div>
+              <p className="text-sm font-bold">سفارش‌های باز واقعی نوبیتکس</p>
+              <p className="text-[11px] text-muted-foreground">
+                این فهرست مستقیماً هنگام همگام‌سازی از صرافی می‌آید و از پوزیشن‌های داخلی جداست.
+              </p>
+            </div>
+            {exchangeOrders.length ? (
+              <div className="space-y-2">
+                {exchangeOrders.map((order, index) => {
+                  const id = Number(order.id ?? order.orderId);
+                  const amount = Number(order.amount ?? order.unmatchedAmount ?? 0);
+                  const priceToman = Number(order.price ?? order.averagePrice ?? 0) / 10;
+                  return (
+                    <div key={Number.isFinite(id) ? id : index} className="flex flex-col gap-2 rounded-xl border border-border/60 bg-secondary/30 p-3 sm:flex-row sm:items-center sm:justify-between">
+                      <div className="grid flex-1 grid-cols-2 gap-2 text-[11px] sm:grid-cols-4">
+                        <Info label="شناسه" value={Number.isFinite(id) ? id.toLocaleString("fa-IR") : "—"} />
+                        <Info label="نوع" value={String(order.type ?? "—")} />
+                        <Info label="مقدار" value={Number.isFinite(amount) ? amount.toLocaleString("fa-IR", { maximumFractionDigits: 8 }) : "—"} />
+                        <Info label="قیمت (تومان)" value={priceToman > 0 ? formatPrice(priceToman) : "بازار"} />
+                      </div>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="rounded-full border-loss/40 text-xs text-loss"
+                        disabled={!Number.isInteger(id) || id <= 0}
+                        onClick={() => void engine.cancelExchangeOrder(id)}
+                      >
+                        لغو سفارش
+                      </Button>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <p className="rounded-xl bg-secondary/30 py-6 text-center text-xs text-muted-foreground">سفارش باز واقعی وجود ندارد.</p>
+            )}
+          </CardContent>
+        </Card>
+      ) : null}
     </div>
   );
 }

@@ -4,16 +4,14 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { StatCard } from "@/components/StatCard";
-import { useEngine, useEngineState } from "@/context/BotContext";
+import { useEngineState } from "@/context/BotContext";
 import { formatPct, formatTime, formatToman, formatInt } from "@/lib/format";
 import type { ApiLogEntry } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 export default function Reports() {
-  const engine = useEngine();
-  const trades = useEngineState((e) => e.trades.slice());
   const logs = useEngineState((e) => e.apiLogs.slice());
-  const daily = useMemo(() => engine.dailyReports(), [trades, engine]);
+  const daily = useEngineState((e) => e.dailyReports());
 
   const logStats = useMemo(() => {
     const ok = logs.filter((l) => l.status === "ok");

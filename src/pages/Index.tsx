@@ -32,6 +32,11 @@ export default function Dashboard() {
   const scans = useEngineState((e) => ({ ...e.scans }));
   const symbols = useEngineState((e) => e.symbols.slice());
   const trades = useEngineState((e) => e.trades.slice(-30));
+  const account = useEngineState((e) => e.account ? {
+    assetCount: Object.keys(e.account.totalBalances ?? e.account.balances).length,
+    openOrderCount: e.account.openOrders.length,
+    equityToman: e.nobitexEquityToman(),
+  } : null);
 
   const [chartSymbol, setChartSymbol] = useState(symbols[0] ?? "BTCIRT");
   const [candles, setCandles] = useState<Candle[]>([]);
@@ -70,6 +75,7 @@ export default function Dashboard() {
   const symbolTrades = trades.filter((t) => t.symbol === chartSymbol);
   const qualified = Object.values(scans).filter((s) => s.signal?.qualified);
   const pnlTone = stats.totalPnl >= 0 ? "profit" : "loss";
+  const displayedCapital = account?.equityToman ?? engine.currentEquity();
 
   return (
     <div className="space-y-4">
@@ -79,8 +85,11 @@ export default function Dashboard() {
         <CardContent className="relative space-y-3 p-5">
           <div className="flex flex-wrap items-end justify-between gap-3">
             <div>
-              <p className="text-xs text-muted-foreground">سرمایه جاری ({stats.mode === "real" ? "واقعی" : "پولی"})</p>
-              <p className="num text-2xl font-extrabold text-foreground md:text-3xl">{formatToman(engine.currentEquity())}</p>
+              <p className="text-xs text-muted-foreground">{account ? "موجودی کل حساب نوبیتکس" : `سرمایه جاری (${stats.mode === "real" ? "واقعی" : "پولی"})`}</p>
+              <p className="num text-2xl font-extrabold text-foreground md:text-3xl">{formatToman(displayedCapital)}</p>
+              {account && stats.mode === "paper" ? (
+                <p className="mt-1 text-[11px] text-muted-foreground">سرمایه Paper Trading: <span className="num">{formatToman(engine.currentEquity())}</span></p>
+              ) : null}
             </div>
             <div className="text-left">
               <p className={stats.totalPnl >= 0 ? "num text-sm font-bold text-profit" : "num text-sm font-bold text-loss"}>
@@ -93,6 +102,7 @@ export default function Dashboard() {
             <Badge variant="outline" className="rounded-full border-border/70">آخرین بررسی: {stats.lastTick ? new Date(stats.lastTick).toLocaleTimeString("fa-IR") : "—"}</Badge>
             <Badge variant="outline" className="rounded-full border-border/70">سرمایه درگیر: {formatPct(stats.engagedCapitalPct, false)}</Badge>
             <Badge variant="outline" className="rounded-full border-border/70">Drawdown: {formatPct(stats.drawdownPct, false)}</Badge>
+            {account ? <Badge variant="outline" className="rounded-full border-profit/40 text-profit">نوبیتکس: {account.assetCount.toLocaleString("fa-IR")} دارایی · {account.openOrderCount.toLocaleString("fa-IR")} سفارش باز</Badge> : null}
           </div>
         </CardContent>
       </Card>

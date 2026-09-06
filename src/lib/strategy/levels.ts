@@ -102,6 +102,14 @@ export function nearestResistance(levels: Level[], price: number): Level | null 
   return above[0] ?? null;
 }
 
+/** نزدیک‌ترین مانع عرضه بالای قیمت: مقاومت، Order Block یا FVG. */
+export function nearestExitLevel(levels: Level[], price: number): Level | null {
+  const above = levels
+    .filter((level) => level.price > price)
+    .sort((a, b) => a.price - b.price || b.strength - a.strength);
+  return above[0] ?? null;
+}
+
 /**
  * Grid: تقسیم فاصله حمایت تا مقاومت اصلی ۳۰ روز اخیر به ۲۵ سطح.
  * فقط برای تقسیم سرمایه و محدودکردن سایز — هرگز سیگنال ورود نیست.
@@ -131,9 +139,10 @@ export function buildGrid(
     return { enabled: false, support, resistance, levels: [], rangePct };
   }
 
+  const count = Math.max(2, Math.round(cfg.gridLevels));
   const gridLevels: number[] = [];
-  for (let i = 0; i <= cfg.gridLevels; i++) {
-    gridLevels.push(support + ((resistance - support) * i) / cfg.gridLevels);
+  for (let i = 0; i < count; i++) {
+    gridLevels.push(support + ((resistance - support) * i) / (count - 1));
   }
   return { enabled: true, support, resistance, levels: gridLevels, rangePct };
 }

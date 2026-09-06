@@ -25,7 +25,8 @@ Available packages and libraries:
 - **API keys live only server-side** (`server/utils/nobitex.ts`, AES-256-GCM in `.tradeban/`, git-ignored). NEVER hardcode keys or import `node:crypto`/server code from `src/`.
 - Pure strategy/risk/backtest logic lives in `src/lib/` (no UI, no network); UI reads engine state via `src/context/BotContext.tsx` only.
 - All strategy thresholds are adjustable through `src/lib/config.ts` — don't hardcode numbers elsewhere.
-- Nobitex API (official docs apidocs.nobitex.ir/spot_trade): candlestore `from`/`to` in **unix seconds** (server proxy converts ms↔s); orderbook is path-based `/market/orderbook/{SYMBOL}`; order POST uses **lowercase** symbol + `orderType: LIMIT|MARKET`; cancel is `DELETE /api/orders/{id}`; balances at `/api/users/wallets/balance`; auth headers `A-Key`/`A-Signature`/`A-Nonce`, signature = HMAC-SHA512(secret, queryString + body + nonce); success responses use `status: "OK"`.
+- Nobitex current API uses `https://apiv2.nobitex.ir`: OHLC at `/market/udf/history` (`from`/`to` are unix seconds; UDF resolutions are `15`/`60`/`240`), orderbook at `/v3/orderbook/{SYMBOL}`, orders at `/market/orders/*`, and wallets at `/v2/wallets`. API keys use Ed25519 with `Nobitex-Key`/`Nobitex-Signature`/`Nobitex-Timestamp`; signature payload is `timestamp + METHOD + full_path_with_query + raw_body`.
+- Nobitex realtime uses `wss://ws.nobitex.ir/connection/websocket` (Centrifugo JSON protocol). Never request `delta:'fossil'` from the native WebSocket client. Private channels require a short-lived `/auth/ws/token/` token plus `websocketAuthParam` from `/users/profile`.
 - Rate limiting: ≥12s between API requests, ≤3 retries with 30s delay on 429 (global queue in `src/lib/engine/api.ts`).
 - Backtest must use closed candles only (no look-ahead).
 - Tests: Vitest in `src/lib/__tests__/` (`pnpm test`).

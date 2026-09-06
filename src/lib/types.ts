@@ -103,6 +103,7 @@ export interface PositionLeg {
   time: number;
   reason: string;
   pnl: number;
+  fee?: number;
 }
 
 export interface Position {

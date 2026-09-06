@@ -79,8 +79,8 @@ export function computePositionSize({
   if (qty * entry > notionalCap) qty = notionalCap / entry;
 
   const notional = qty * entry;
-  if (notional < 1000) {
-    return { allowed: false, qty: 0, notional: 0, riskAmount: 0, reason: "سایز محاسبه‌شده کمتر از حداقل سفارش است" };
+  if (notional < cfg.minOrderToman) {
+    return { allowed: false, qty: 0, notional: 0, riskAmount: 0, reason: `سایز محاسبه‌شده کمتر از حداقل سفارش (${cfg.minOrderToman.toLocaleString("fa-IR")} تومان) است` };
   }
   return {
     allowed: true,

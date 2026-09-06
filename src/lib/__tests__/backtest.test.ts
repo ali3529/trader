@@ -41,7 +41,7 @@ describe("runBacktest", () => {
 
   it("بدون خطا اجرا می‌شود و منحنی سرمایه می‌سازد", () => {
     const r = runBacktest({ symbol: "BTCIRT", candles15m: candles, cfg });
-    expect(r.equity.length).toBeGreaterThan(0);
+    expect(r.equity.length).toBeGreaterThanOrEqual(candles.length);
     for (const p of r.equity) {
       expect(Number.isFinite(p.equity)).toBe(true);
       expect(p.equity).toBeGreaterThan(0);

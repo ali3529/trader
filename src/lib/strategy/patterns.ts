@@ -1,4 +1,5 @@
 import type { Candle, PatternHit, PatternName } from "../types";
+import type { StrategyConfig } from "../config";
 
 function body(c: Candle): number {
   return Math.abs(c.close - c.open);
@@ -27,38 +28,42 @@ function bullishEngulfing(candles: Candle[], i: number): boolean {
 }
 
 /** Pin Bar صعودی: سایه پایین بلند، بدنه کوچک در بالای کندل */
-function bullishPinBar(candles: Candle[], i: number): boolean {
+function bullishPinBar(candles: Candle[], i: number, cfg?: StrategyConfig): boolean {
   const c = candles[i];
   const r = range(c);
   if (r <= 0) return false;
   const lowerWick = Math.min(c.open, c.close) - c.low;
   const upperWick = c.high - Math.max(c.open, c.close);
-  return lowerWick >= r * 0.6 && upperWick <= r * 0.15 && body(c) <= r * 0.35;
+  return lowerWick >= r * (cfg?.pinbarLongWickRatio ?? 0.6) &&
+    upperWick <= r * (cfg?.pinbarOppositeWickRatio ?? 0.15) &&
+    body(c) <= r * (cfg?.pinbarMaxBodyRatio ?? 0.35);
 }
 
 /** Hammer: بدنه کوچک نزدیک سقف، سایه پایین حداقل ۲ برابر بدنه، در کف محلی */
-function hammer(candles: Candle[], i: number): boolean {
+function hammer(candles: Candle[], i: number, cfg?: StrategyConfig): boolean {
   const c = candles[i];
   const r = range(c);
   if (r <= 0 || body(c) === 0) return false;
   const lowerWick = Math.min(c.open, c.close) - c.low;
   const upperWick = c.high - Math.max(c.open, c.close);
-  const localLow = Math.min(...candles.slice(Math.max(0, i - 5), i).map((x) => x.low));
-  return lowerWick >= body(c) * 2 && upperWick <= body(c) && c.low <= localLow * 1.005;
+  const localLookback = cfg?.hammerLocalLookback ?? 5;
+  const localLow = Math.min(...candles.slice(Math.max(0, i - localLookback), i).map((x) => x.low));
+  const tolerance = (cfg?.hammerLowTolerancePct ?? 0.5) / 100;
+  return lowerWick >= body(c) * (cfg?.hammerWickBodyRatio ?? 2) && upperWick <= body(c) && c.low <= localLow * (1 + tolerance);
 }
 
 /** Morning Star: نزولی بزرگ، بدنه کوچک جهش‌کرده، صعودی قوی */
-function morningStar(candles: Candle[], i: number): boolean {
+function morningStar(candles: Candle[], i: number, cfg?: StrategyConfig): boolean {
   if (i < 2) return false;
   const a = candles[i - 2];
   const b = candles[i - 1];
   const c = candles[i];
   return (
     isBearish(a) &&
-    body(a) > range(a) * 0.5 &&
-    body(b) < body(a) * 0.4 &&
+    body(a) > range(a) * (cfg?.morningStarFirstBodyRatio ?? 0.5) &&
+    body(b) < body(a) * (cfg?.morningStarMiddleBodyRatio ?? 0.4) &&
     isBullish(c) &&
-    c.close > a.open - (a.open - a.close) * 0.5
+    c.close > a.open - (a.open - a.close) * (cfg?.morningStarRecoveryRatio ?? 0.5)
   );
 }
 
@@ -76,16 +81,18 @@ function bearishEngulfing(candles: Candle[], i: number): boolean {
 }
 
 /** Pin Bar نزولی برای تأیید خروج */
-function bearishPinBar(candles: Candle[], i: number): boolean {
+function bearishPinBar(candles: Candle[], i: number, cfg?: StrategyConfig): boolean {
   const c = candles[i];
   const r = range(c);
   if (r <= 0) return false;
   const upperWick = c.high - Math.max(c.open, c.close);
   const lowerWick = Math.min(c.open, c.close) - c.low;
-  return upperWick >= r * 0.6 && lowerWick <= r * 0.15 && body(c) <= r * 0.35;
+  return upperWick >= r * (cfg?.pinbarLongWickRatio ?? 0.6) &&
+    lowerWick <= r * (cfg?.pinbarOppositeWickRatio ?? 0.15) &&
+    body(c) <= r * (cfg?.pinbarMaxBodyRatio ?? 0.35);
 }
 
-const DETECTORS: Record<PatternName, (candles: Candle[], i: number) => boolean> = {
+const DETECTORS: Record<PatternName, (candles: Candle[], i: number, cfg?: StrategyConfig) => boolean> = {
   bullish_engulfing: bullishEngulfing,
   bullish_pinbar: bullishPinBar,
   hammer,
@@ -112,12 +119,12 @@ const BULLISH_PATTERNS: PatternName[] = [
 const BEARISH_PATTERNS: PatternName[] = ["bearish_engulfing", "bearish_pinbar"];
 
 /** الگوهای صعودی روی آخرین کندل بسته‌شده */
-export function detectBullishPatterns(candles: Candle[]): PatternHit[] {
+export function detectBullishPatterns(candles: Candle[], cfg?: StrategyConfig): PatternHit[] {
   const i = candles.length - 1;
   if (i < 3) return [];
   const hits: PatternHit[] = [];
   for (const name of BULLISH_PATTERNS) {
-    if (DETECTORS[name](candles, i)) {
+    if (DETECTORS[name](candles, i, cfg)) {
       hits.push({ name, index: i, bullish: true });
     }
   }
@@ -125,12 +132,12 @@ export function detectBullishPatterns(candles: Candle[]): PatternHit[] {
 }
 
 /** الگوهای نزولی روی آخرین کندل بسته‌شده */
-export function detectBearishPatterns(candles: Candle[]): PatternHit[] {
+export function detectBearishPatterns(candles: Candle[], cfg?: StrategyConfig): PatternHit[] {
   const i = candles.length - 1;
   if (i < 2) return [];
   const hits: PatternHit[] = [];
   for (const name of BEARISH_PATTERNS) {
-    if (DETECTORS[name](candles, i)) {
+    if (DETECTORS[name](candles, i, cfg)) {
       hits.push({ name, index: i, bullish: false });
     }
   }

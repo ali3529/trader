@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { KeyRound, Landmark, ListChecks, RotateCcw, Save, ShieldAlert, Trash2 } from "lucide-react";
+import { BrainCircuit, KeyRound, Landmark, ListChecks, RotateCcw, Save, ShieldAlert, Trash2 } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -24,6 +24,8 @@ import { useEngine, useEngineState } from "@/context/BotContext";
 import { DEFAULT_CONFIG } from "@/lib/config";
 import type { StrategyConfig } from "@/lib/config";
 import { cn } from "@/lib/utils";
+import { fetchQwenStatus } from "@/lib/ai";
+import type { QwenStatus } from "@/lib/ai";
 
 interface FieldDef {
   key: keyof StrategyConfig;
@@ -42,6 +44,7 @@ const GROUPS: { title: string; fields: FieldDef[] }[] = [
       { key: "drawdownHalvePct", label: "Drawdown نصف‌کردن سایز (٪)", step: 1 },
       { key: "drawdownStopPct", label: "Drawdown توقف ورود (٪)", step: 1 },
       { key: "paperInitialCapital", label: "سرمایه اولیه پولی (تومان)", step: 1000000 },
+      { key: "minOrderToman", label: "حداقل ارزش سفارش (تومان)", step: 100000 },
     ],
   },
   {
@@ -74,6 +77,28 @@ const GROUPS: { title: string; fields: FieldDef[] }[] = [
     ],
   },
   {
+    title: "Price Action پیشرفته",
+    fields: [
+      { key: "swingLookback", label: "کندل دو طرف Swing", step: 1 },
+      { key: "levelClusterAtr", label: "تلورانس خوشه سطح (×ATR)", step: 0.05 },
+      { key: "levelMinTouches", label: "حداقل برخورد S/R", step: 1 },
+      { key: "orderBlockBodyPeriod", label: "دوره بدنه Order Block", step: 1 },
+      { key: "orderBlockImpulseMult", label: "قدرت حرکت Order Block (×بدنه)", step: 0.1 },
+      { key: "keyLevelLookbackBars", label: "عمق جست‌وجوی OB/FVG", step: 5 },
+      { key: "stopBufferAtr", label: "حاشیه Stop زیر ساختار (×ATR)", step: 0.05 },
+      { key: "exitChochBars", label: "پنجره CHoCH خروج (کندل)", step: 1 },
+      { key: "pinbarLongWickRatio", label: "حداقل سایه بلند Pin Bar", step: 0.05 },
+      { key: "pinbarOppositeWickRatio", label: "حداکثر سایه مخالف Pin Bar", step: 0.05 },
+      { key: "pinbarMaxBodyRatio", label: "حداکثر بدنه Pin Bar", step: 0.05 },
+      { key: "hammerWickBodyRatio", label: "سایه Hammer نسبت به بدنه", step: 0.25 },
+      { key: "hammerLocalLookback", label: "پنجره کف Hammer", step: 1 },
+      { key: "hammerLowTolerancePct", label: "تلورانس کف Hammer (٪)", step: 0.1 },
+      { key: "morningStarFirstBodyRatio", label: "بدنه اول Morning Star", step: 0.05 },
+      { key: "morningStarMiddleBodyRatio", label: "بدنه میانی Morning Star", step: 0.05 },
+      { key: "morningStarRecoveryRatio", label: "بازیابی Morning Star", step: 0.05 },
+    ],
+  },
+  {
     title: "Grid (فقط تقسیم سرمایه — نه سیگنال)",
     fields: [
       { key: "gridLevels", label: "تعداد سطوح Grid", step: 1 },
@@ -95,9 +120,17 @@ const GROUPS: { title: string; fields: FieldDef[] }[] = [
 
 interface KeyStatus {
   configured: boolean;
+  needsUpgrade: boolean;
   realEnabled: boolean;
   sandbox: boolean;
   maskedKey: string | null;
+}
+
+interface ConnectionStatus {
+  connected: boolean;
+  privateEnabled: boolean;
+  displayName: string | null;
+  error: string | null;
 }
 
 export default function SettingsPage() {
@@ -110,26 +143,62 @@ export default function SettingsPage() {
   const [savedMsg, setSavedMsg] = useState<string | null>(null);
   const [symbolText, setSymbolText] = useState(symbols.join("\n"));
   const [keyStatus, setKeyStatus] = useState<KeyStatus | null>(null);
+  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus | null>(null);
   const [apiKey, setApiKey] = useState("");
   const [apiSecret, setApiSecret] = useState("");
   const [sandbox, setSandbox] = useState(false);
   const [keyMsg, setKeyMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [confirmText, setConfirmText] = useState("");
   const [realDialogOpen, setRealDialogOpen] = useState(false);
+  const [qwenStatus, setQwenStatus] = useState<QwenStatus | null>(null);
 
   useEffect(() => setDraft({ ...cfg }), [cfg]);
 
   async function refreshKeyStatus() {
     try {
       const res = await fetch("/api/keys");
-      setKeyStatus(await res.json());
+      const status = await res.json() as KeyStatus;
+      setKeyStatus(status);
+      if (!status.configured) setConnectionStatus(null);
+      return status;
     } catch {
       setKeyStatus(null);
+      return null;
+    }
+  }
+
+  async function testConnection() {
+    setConnectionStatus(null);
+    try {
+      const res = await fetch("/api/nobitex/ws-config", { cache: "no-store" });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null) as { statusMessage?: string; message?: string } | null;
+        throw new Error(body?.statusMessage ?? body?.message ?? `HTTP ${res.status}`);
+      }
+      const data = await res.json() as { privateEnabled?: boolean; user?: { displayName?: string | null } };
+      setConnectionStatus({
+        connected: true,
+        privateEnabled: data.privateEnabled === true,
+        displayName: data.user?.displayName ?? null,
+        error: null,
+      });
+    } catch (error) {
+      setConnectionStatus({ connected: false, privateEnabled: false, displayName: null, error: (error as Error).message });
     }
   }
   useEffect(() => {
-    void refreshKeyStatus();
+    void refreshKeyStatus().then((status) => {
+      if (status?.configured) void testConnection();
+    });
   }, []);
+
+  async function refreshQwenStatus() {
+    try {
+      setQwenStatus(await fetchQwenStatus());
+    } catch (error) {
+      setQwenStatus({ reachable: false, ready: false, model: "qwen3:4b", installedModels: [], error: (error as Error).message });
+    }
+  }
 
   function saveStrategy() {
     const next = { ...cfg } as StrategyConfig;
@@ -177,6 +246,7 @@ export default function SettingsPage() {
       setApiSecret("");
       setKeyMsg({ ok: true, text: "کلیدها به‌صورت رمزنگاری‌شده سمت سرور ذخیره شدند. (معامله واقعی همچنان غیرفعال است)" });
       await refreshKeyStatus();
+      await testConnection();
     } catch (err) {
       setKeyMsg({ ok: false, text: `خطا: ${(err as Error).message}` });
     }
@@ -185,6 +255,7 @@ export default function SettingsPage() {
   async function deleteKeys() {
     await fetch("/api/keys", { method: "DELETE" });
     setKeyMsg({ ok: true, text: "کلیدها از سرور حذف شدند." });
+    setConnectionStatus(null);
     await refreshKeyStatus();
   }
 
@@ -229,7 +300,7 @@ export default function SettingsPage() {
       ) : null}
 
       <Tabs defaultValue="strategy" className="w-full">
-        <TabsList className="w-full justify-start rounded-xl bg-secondary/50 p-1">
+        <TabsList className="h-auto w-full justify-start overflow-x-auto rounded-xl bg-secondary/50 p-1">
           <TabsTrigger value="strategy" className="rounded-lg text-xs data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
             <ListChecks className="ml-1 h-3.5 w-3.5" /> استراتژی و ریسک
           </TabsTrigger>
@@ -238,6 +309,9 @@ export default function SettingsPage() {
           </TabsTrigger>
           <TabsTrigger value="symbols" className="rounded-lg text-xs data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
             <Landmark className="ml-1 h-3.5 w-3.5" /> نمادها
+          </TabsTrigger>
+          <TabsTrigger value="ai" className="rounded-lg text-xs data-[state=active]:bg-primary data-[state=active]:text-primary-foreground" onClick={() => void refreshQwenStatus()}>
+            <BrainCircuit className="ml-1 h-3.5 w-3.5" /> Qwen محلی
           </TabsTrigger>
         </TabsList>
 
@@ -312,12 +386,27 @@ export default function SettingsPage() {
                   <>
                     <Badge className="rounded-full bg-profit/15 px-3 py-1 text-profit">کلید ذخیره شده: {keyStatus.maskedKey}</Badge>
                     {keyStatus.sandbox ? <Badge className="rounded-full bg-sky-500/15 px-3 py-1 text-sky-400">محیط Sandbox</Badge> : null}
-                    {keyStatus.realEnabled ? (
+                    {keyStatus.realEnabled && connectionStatus?.connected ? (
                       <Badge className="rounded-full bg-loss/15 px-3 py-1 text-loss">معامله واقعی فعال</Badge>
+                    ) : keyStatus.realEnabled ? (
+                      <Badge className="rounded-full bg-warn/15 px-3 py-1 text-warn">معامله واقعی تا تأیید اتصال مسدود است</Badge>
                     ) : (
                       <Badge variant="outline" className="rounded-full border-border/70 px-3 py-1 text-muted-foreground">معامله واقعی غیرفعال</Badge>
                     )}
+                    {connectionStatus?.connected && connectionStatus.privateEnabled ? (
+                      <Badge className="rounded-full bg-profit/15 px-3 py-1 text-profit">
+                        REST + WebSocket خصوصی متصل{connectionStatus.displayName ? ` · ${connectionStatus.displayName}` : ""}
+                      </Badge>
+                    ) : connectionStatus?.error ? (
+                      <Badge className="rounded-full bg-loss/15 px-3 py-1 text-loss" title={connectionStatus.error}>
+                        احراز هویت ناموفق
+                      </Badge>
+                    ) : null}
                   </>
+                ) : keyStatus?.needsUpgrade ? (
+                  <Badge className="rounded-full bg-warn/15 px-3 py-1 text-warn">
+                    کلید قدیمی و ناسازگار — کلید Ed25519 جدید ذخیره کنید
+                  </Badge>
                 ) : (
                   <Badge variant="outline" className="rounded-full border-border/70 px-3 py-1 text-muted-foreground">هیچ کلیدی ذخیره نشده — فقط داده عمومی</Badge>
                 )}
@@ -327,12 +416,14 @@ export default function SettingsPage() {
 
               <div className="grid gap-3 md:grid-cols-2">
                 <div className="space-y-1.5">
-                  <Label className="text-[11px]" htmlFor="api-key">API Key</Label>
-                  <Input id="api-key" dir="ltr" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="کلید API نوبیتکس" className="h-9 rounded-lg text-xs" />
+                  <Label className="text-[11px]" htmlFor="nobitex-public-key">Nobitex Public API Key</Label>
+                  <Input id="nobitex-public-key" name="nobitex-public-key" autoComplete="off" dir="ltr" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="فیلد key از پاسخ ساخت API Key" className="h-9 rounded-lg text-xs" />
+                  <p className="text-[10px] text-muted-foreground">ایمیل، User Token یا privateKey را اینجا وارد نکنید.</p>
                 </div>
                 <div className="space-y-1.5">
-                  <Label className="text-[11px]" htmlFor="api-secret">API Secret</Label>
-                  <Input id="api-secret" dir="ltr" type="password" value={apiSecret} onChange={(e) => setApiSecret(e.target.value)} placeholder="Secret Key" className="h-9 rounded-lg text-xs" />
+                  <Label className="text-[11px]" htmlFor="nobitex-private-key">Ed25519 Private Key</Label>
+                  <Input id="nobitex-private-key" name="nobitex-private-key" autoComplete="new-password" dir="ltr" type="password" value={apiSecret} onChange={(e) => setApiSecret(e.target.value)} placeholder="فیلد privateKey که فقط یک‌بار نمایش داده می‌شود" className="h-9 rounded-lg text-xs" />
+                  <p className="text-[10px] text-muted-foreground">Private Key باید URL-safe Base64 و دقیقاً مربوط به همان public key باشد.</p>
                 </div>
               </div>
               <div className="flex flex-wrap items-center gap-4">
@@ -343,6 +434,11 @@ export default function SettingsPage() {
                 <Button size="sm" className="rounded-full" onClick={saveKeys} disabled={!apiKey || !apiSecret}>
                   <Save className="ml-1 h-3.5 w-3.5" /> ذخیره رمزنگاری‌شده
                 </Button>
+                {keyStatus?.configured || keyStatus?.needsUpgrade ? (
+                  <Button size="sm" variant="outline" className="rounded-full" onClick={() => void testConnection()}>
+                    <RotateCcw className="ml-1 h-3.5 w-3.5" /> تست REST و WebSocket
+                  </Button>
+                ) : null}
                 {keyStatus?.configured ? (
                   <Button size="sm" variant="destructive" className="rounded-full" onClick={deleteKeys}>
                     <Trash2 className="ml-1 h-3.5 w-3.5" /> حذف کلیدها
@@ -358,34 +454,43 @@ export default function SettingsPage() {
             </CardContent>
           </Card>
 
-          <Card className={cn("border-border/60", mode === "real" && "border-loss/50")}>
-            <CardHeader className="pb-2">
-              <CardTitle className="flex items-center gap-2 text-sm font-bold">
+          <Card dir="rtl" className={cn("border-border/60", mode === "real" && "border-loss/50")}>
+            <CardHeader className="items-start pb-2 text-right">
+              <CardTitle className="flex w-full items-center justify-start gap-2 text-right text-sm font-bold">
                 <ShieldAlert className={mode === "real" ? "h-4 w-4 text-loss" : "h-4 w-4 text-profit"} />
                 حالت معامله
               </CardTitle>
-              <CardDescription className="text-[11px]">
-                حالت پیش‌فرض Paper Trading است. معامله واقعی با پول حقیقی فقط پس از تأیید روشن شما فعال می‌شود.
+              <CardDescription className="w-full text-right text-[11px] leading-6">
+                حالت پیش‌فرض، معامله آزمایشی است. معامله واقعی با پول حقیقی فقط پس از تأیید روشن شما فعال می‌شود.
               </CardDescription>
             </CardHeader>
-            <CardContent className="space-y-3">
-              <div className="flex flex-wrap items-center gap-3 text-xs">
-                <label className="flex items-center gap-2">
-                  <Switch
-                    checked={mode === "real"}
-                    onCheckedChange={(v) => void engine.setMode(v ? "real" : "paper")}
-                  />
-                  <span className={mode === "real" ? "font-bold text-loss" : "font-bold text-profit"}>
-                    {mode === "real" ? "معامله واقعی روی نوبیتکس" : "Paper Trading (شبیه‌سازی)"}
-                  </span>
-                </label>
+            <CardContent className="space-y-3 text-right">
+              <div className="flex w-full flex-col gap-3 rounded-xl border border-border/60 bg-secondary/20 p-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="min-w-0 text-right">
+                  <p className="text-[10px] text-muted-foreground">حالت فعلی</p>
+                  <p className={cn("mt-1 text-xs font-bold", mode === "real" ? "text-loss" : "text-profit")}>
+                    {mode === "real" ? (
+                      "معامله واقعی روی نوبیتکس"
+                    ) : (
+                      <>معامله آزمایشی <bdi dir="ltr" className="inline-block font-mono">(Paper Trading)</bdi></>
+                    )}
+                  </p>
+                </div>
+                <Switch
+                  dir="ltr"
+                  aria-label={mode === "real" ? "غیرفعال‌کردن معامله واقعی" : "تغییر به معامله واقعی"}
+                  checked={mode === "real"}
+                  onCheckedChange={(v) => void engine.setMode(v ? "real" : "paper")}
+                />
               </div>
 
               {keyStatus?.configured ? (
                 keyStatus.realEnabled ? (
-                  <Button size="sm" variant="outline" className="rounded-full border-loss/50 text-loss" onClick={() => void toggleReal(false)}>
-                    غیرفعال‌سازی معامله واقعی
-                  </Button>
+                  <div className="flex justify-start">
+                    <Button size="sm" variant="outline" className="rounded-full border-loss/50 text-loss" onClick={() => void toggleReal(false)}>
+                      غیرفعال‌سازی اجازه معامله واقعی
+                    </Button>
+                  </div>
                 ) : (
                   <AlertDialog open={realDialogOpen} onOpenChange={setRealDialogOpen}>
                     <AlertDialogTrigger asChild>
@@ -393,7 +498,7 @@ export default function SettingsPage() {
                         فعال‌سازی معامله واقعی…
                       </Button>
                     </AlertDialogTrigger>
-                    <AlertDialogContent className="max-w-md rounded-2xl">
+                    <AlertDialogContent dir="rtl" className="max-w-md rounded-2xl text-right">
                       <AlertDialogHeader>
                         <AlertDialogTitle className="text-sm">تأیید روشن معامله واقعی</AlertDialogTitle>
                         <AlertDialogDescription className="text-xs leading-6">
@@ -424,7 +529,11 @@ export default function SettingsPage() {
                   </AlertDialog>
                 )
               ) : (
-                <p className="text-[11px] text-muted-foreground">ابتدا کلیدهای API را ذخیره کنید.</p>
+                <p className="text-[11px] text-muted-foreground">
+                  {keyStatus?.needsUpgrade
+                    ? "کلید ذخیره‌شده مربوط به API قدیمی است. از پنل نوبیتکس یک کلید جدید با READ و در صورت نیاز TRADE بسازید."
+                    : "ابتدا کلیدهای API را ذخیره کنید."}
+                </p>
               )}
 
               {mode === "real" ? (
@@ -456,6 +565,32 @@ export default function SettingsPage() {
               <Button onClick={saveSymbols} className="rounded-full">
                 <Save className="ml-1 h-4 w-4" /> ذخیره نمادها
               </Button>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="ai" className="mt-4 space-y-4">
+          <Card className="border-border/60">
+            <CardHeader className="pb-2">
+              <CardTitle className="flex items-center gap-2 text-sm font-bold"><BrainCircuit className="h-4 w-4 text-sky-400" /> دستیار محلی Qwen</CardTitle>
+              <CardDescription className="text-[11px] leading-6">
+                Qwen فقط snapshot سیگنال را تحلیل می‌کند؛ کلید نوبیتکس، موجودی خصوصی و اختیار ارسال سفارش در اختیار مدل قرار نمی‌گیرد.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3 text-xs">
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge className={cn("rounded-full px-3 py-1", qwenStatus?.ready ? "bg-profit/15 text-profit" : "bg-warn/15 text-warn") }>
+                  {qwenStatus?.ready ? `آماده: ${qwenStatus.model}` : qwenStatus?.reachable ? `Ollama متصل؛ مدل ${qwenStatus.model} نصب نیست` : "Ollama در دسترس نیست"}
+                </Badge>
+                <Button size="sm" variant="outline" className="rounded-full" onClick={() => void refreshQwenStatus()}>بررسی دوباره</Button>
+              </div>
+              <div dir="ltr" className="num space-y-1 rounded-xl border border-border/60 bg-secondary/30 p-3 text-left text-[11px]">
+                <p>ollama pull qwen3:4b</p>
+                <p>ollama serve</p>
+                <p>NITRO_OLLAMA_MODEL=qwen3:4b pnpm dev</p>
+              </div>
+              {qwenStatus?.error ? <p className="text-loss">{qwenStatus.error}</p> : null}
+              <p className="text-muted-foreground">پس از آماده‌شدن مدل، در صفحه «فرصت‌ها» دکمه «بررسی مشورتی Qwen» فعال و قابل استفاده است. تصمیم قطعی همچنان فقط با موتور Price Action و ریسک انجام می‌شود.</p>
             </CardContent>
           </Card>
         </TabsContent>

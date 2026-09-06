@@ -6,7 +6,7 @@ import { detectBullishPatterns, PATTERN_LABELS } from "./patterns";
 import {
   allLevels,
   buildGrid,
-  nearestResistance,
+  nearestExitLevel,
   nearestSupport,
 } from "./levels";
 
@@ -39,7 +39,7 @@ export function evaluateEntry({ symbol, candles4h, candles1h, candles15m, cfg }:
   // سطوح کلیدی یک‌ساعته
   const levels = allLevels(candles1h, atr1h);
   const support = nearestSupport(levels, entry);
-  const resistance = nearestResistance(levels, entry);
+  const resistance = nearestExitLevel(levels, entry);
 
   // ۲) محل معتبر: نزدیکی قیمت به حمایت/Order Block/FVG (حیاتی)
   const distanceToLevel = support ? entry - support.price : Infinity;
@@ -71,10 +71,11 @@ export function evaluateEntry({ symbol, candles4h, candles1h, candles15m, cfg }:
   const stopDist = entry - stop;
 
   // ۷) RR حداقل ۱:۱.۵ نسبت به نزدیک‌ترین مقاومت (حیاتی)
-  const fallbackTarget = entry + stopDist * (cfg.minRR + 1);
-  const target = resistance ? Math.max(resistance.price, entry + stopDist * cfg.minRR) : fallbackTarget;
+  // هدف را از یک سطح واقعی می‌گیریم؛ ساختن هدف مصنوعی دقیقاً روی minRR
+  // معیار RR را همیشه true می‌کرد و اعتبار محل خروج را از بین می‌برد.
+  const target = resistance?.price ?? entry;
   const rr = stopDist > 0 ? (target - entry) / stopDist : 0;
-  const rrOk = rr >= cfg.minRR;
+  const rrOk = resistance !== null && rr >= cfg.minRR;
 
   // ۸) Stop معتبر: فاصله منطقی بر حسب ATR (حیاتی)
   const stopAtrDist = stopDist / atr1h;
@@ -140,7 +141,9 @@ export function evaluateEntry({ symbol, candles4h, candles1h, candles15m, cfg }:
       label: `نسبت ریسک/ریوارد ≥ ${cfg.minRR}`,
       passed: rrOk,
       critical: true,
-      detail: `RR محاسبه‌شده: ${rr.toFixed(2).replace(".", "٫")} تا هدف ${Math.round(target).toLocaleString("fa-IR")}`,
+      detail: resistance
+        ? `RR محاسبه‌شده: ${rr.toFixed(2).replace(".", "٫")} تا سطح ${Math.round(target).toLocaleString("fa-IR")}`
+        : "سطح معتبر مقاومت/Order Block/FVG بالای ورود یافت نشد",
     },
     {
       id: "validStop",

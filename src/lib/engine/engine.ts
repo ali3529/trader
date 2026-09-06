@@ -1,4 +1,4 @@
-import { DEFAULT_CONFIG, loadConfig, loadSymbols, saveConfig, saveSymbols } from "../config";
+import { DEFAULT_CONFIG, loadConfig, loadSymbols, normalizeConfig, saveConfig, saveSymbols } from "../config";
 import type { StrategyConfig } from "../config";
 import type {
   ApiLogEntry,
@@ -14,7 +14,7 @@ import type {
 import { evaluateEntry } from "../strategy/scoring";
 import { analyzeStructure, hasRecentBearishChoch } from "../strategy/structure";
 import { detectBearishPatterns, PATTERN_LABELS } from "../strategy/patterns";
-import { allLevels, nearestResistance } from "../strategy/levels";
+import { allLevels, nearestExitLevel } from "../strategy/levels";
 import { lastAtr, aggregateCandles } from "../strategy/indicators";
 import {
   computeMetrics,
@@ -24,9 +24,13 @@ import {
   riskState,
 } from "../risk/risk";
 import { configureApi, fetchCandles, getApiLogs, onApiLog } from "./api";
+import { NobitexWebSocket } from "./nobitexWebSocket";
+import type { NobitexSocketState, RealtimeMarketUpdate } from "./nobitexWebSocket";
 import { formatDate } from "../format";
 
-const STORE_KEY = "tradeban.engine.v1";
+const LEGACY_STORE_KEY = "tradeban.engine.v1";
+const PAPER_STORE_KEY = "tradeban.engine.paper.v2";
+const REAL_STORE_KEY = "tradeban.engine.real.v2";
 const RES: Record<string, string> = { "15m": "900", "1h": "3600", "4h": "14400" };
 const RES_MS: Record<string, number> = { "15m": 900_000, "1h": 3_600_000, "4h": 14_400_000 };
 
@@ -37,7 +41,44 @@ interface PersistedState {
   trades: Trade[];
   equity: EquityPoint[];
   lastSignal1h: Record<string, number>;
-  mode: "paper" | "real";
+  lastProcessed15m: Record<string, number>;
+}
+
+interface RealOrderResult {
+  orderId: number | null;
+  orderStatus: string | null;
+  filledQuantity: number;
+  averagePrice: number;
+  reconciliationRequired: boolean;
+}
+
+interface NobitexAccount {
+  balances: Record<string, number>;
+  totalBalances?: Record<string, number>;
+  blockedBalances?: Record<string, number>;
+  openOrders: unknown[];
+  botOrders?: BotOrderRecord[];
+}
+
+interface BotOrderRecord {
+  orderId: number;
+  clientOrderId: string;
+  symbol: string;
+  side: "buy" | "sell";
+  requestedQty: number;
+  filledQty: number;
+  averagePrice: number;
+  status: string;
+  reconciliationRequired: boolean;
+  createdAt: number;
+  positionId: string;
+  stop?: number;
+  target?: number;
+  rr?: number;
+  atr?: number;
+  signalTime?: number;
+  signalScore?: number;
+  reason?: string;
 }
 
 /** موتور اصلی ربات: اسکن چندنمادی، مدیریت پوزیشن‌ها و Paper/Real Trading */
@@ -55,16 +96,35 @@ export class BotEngine {
   cash: number = this.cfg.paperInitialCapital;
   peakEquity: number = this.cfg.paperInitialCapital;
   apiLogs: ApiLogEntry[] = [];
-  account: { balances: Record<string, number>; openOrders: unknown[] } | null = null;
+  account: NobitexAccount | null = null;
+  websocket: NobitexSocketState = { status: "idle", privateEnabled: false, lastMessageAt: null, error: null };
   busy = false;
   notice: string | null = null;
 
   private lastSignal1h: Record<string, number> = {};
   private lastProcessed15m: Record<string, number> = {};
   private timer: ReturnType<typeof setInterval> | null = null;
+  private realtimeNotifyTimer: ReturnType<typeof setTimeout> | null = null;
+  private accountSyncPromise: Promise<boolean> | null = null;
+  private wasPrivateSocketConnected = false;
+  private realtimeMarkets: Record<string, RealtimeMarketUpdate> = {};
+  private socket: NobitexWebSocket;
   private listeners = new Set<() => void>();
 
   constructor() {
+    this.socket = new NobitexWebSocket({
+      onState: (state) => {
+        this.websocket = state;
+        this.notifyUi();
+        const privateConnected = state.status === "connected" && state.privateEnabled;
+        if (privateConnected && !this.wasPrivateSocketConnected) {
+          void this.syncWithExchange();
+        }
+        this.wasPrivateSocketConnected = privateConnected;
+      },
+      onMarket: (update) => this.applyRealtimeMarket(update),
+      onPrivateEvent: (kind, data) => this.applyPrivateEvent(kind, data),
+    });
     configureApi(this.cfg);
     this.restore();
     this.apiLogs = getApiLogs();
@@ -85,6 +145,10 @@ export class BotEngine {
     this.persist();
   }
 
+  private notifyUi(): void {
+    this.listeners.forEach((fn) => fn());
+  }
+
   // ---------- پایداری ----------
 
   private persist(): void {
@@ -95,10 +159,10 @@ export class BotEngine {
       trades: this.trades.slice(-500),
       equity: this.equity.slice(-3000),
       lastSignal1h: this.lastSignal1h,
-      mode: this.mode,
+      lastProcessed15m: this.lastProcessed15m,
     };
     try {
-      localStorage.setItem(STORE_KEY, JSON.stringify(state));
+      localStorage.setItem(this.mode === "real" ? REAL_STORE_KEY : PAPER_STORE_KEY, JSON.stringify(state));
     } catch {
       /* حافظه محلی در دسترس نیست */
     }
@@ -106,22 +170,26 @@ export class BotEngine {
 
   private restore(): void {
     try {
-      const raw = localStorage.getItem(STORE_KEY);
+      const raw = localStorage.getItem(PAPER_STORE_KEY) ?? localStorage.getItem(LEGACY_STORE_KEY);
       if (!raw) return;
-      const s = JSON.parse(raw) as Partial<PersistedState>;
-      this.cash = s.cash ?? this.cash;
-      this.peakEquity = s.peakEquity ?? this.peakEquity;
-      this.positions = s.positions ?? [];
-      this.trades = s.trades ?? [];
-      this.equity = s.equity ?? [];
-      this.lastSignal1h = s.lastSignal1h ?? {};
-      this.mode = s.mode === "real" ? "real" : "paper";
+      this.applyPersisted(JSON.parse(raw) as Partial<PersistedState>);
+      this.mode = "paper"; // Real trading must be explicitly re-enabled each session.
     } catch {
       /* حالت اولیه */
     }
   }
 
   resetPaper(): void {
+    if (this.mode === "real") {
+      try {
+        localStorage.setItem(PAPER_STORE_KEY, JSON.stringify(this.emptyPortfolio(this.cfg.paperInitialCapital)));
+      } catch {
+        /* حافظه محلی در دسترس نیست */
+      }
+      this.notice = "حساب Paper بازنشانی شد؛ دفتر واقعی بدون تغییر باقی ماند.";
+      this.notifyUi();
+      return;
+    }
     this.cash = this.cfg.paperInitialCapital;
     this.peakEquity = this.cfg.paperInitialCapital;
     this.positions = [];
@@ -132,22 +200,61 @@ export class BotEngine {
     this.notify();
   }
 
+  private emptyPortfolio(initialCapital: number): PersistedState {
+    return {
+      cash: initialCapital,
+      peakEquity: initialCapital,
+      positions: [],
+      trades: [],
+      equity: [],
+      lastSignal1h: {},
+      lastProcessed15m: {},
+    };
+  }
+
+  private applyPersisted(state: Partial<PersistedState>): void {
+    this.cash = Number.isFinite(state.cash) ? Number(state.cash) : this.cfg.paperInitialCapital;
+    this.peakEquity = Number.isFinite(state.peakEquity) ? Number(state.peakEquity) : this.cash;
+    this.positions = Array.isArray(state.positions) ? state.positions : [];
+    this.trades = Array.isArray(state.trades) ? state.trades : [];
+    this.equity = Array.isArray(state.equity) ? state.equity : [];
+    this.lastSignal1h = state.lastSignal1h ?? {};
+    this.lastProcessed15m = state.lastProcessed15m ?? {};
+  }
+
+  private loadPortfolio(mode: "paper" | "real"): void {
+    const key = mode === "real" ? REAL_STORE_KEY : PAPER_STORE_KEY;
+    try {
+      const raw = localStorage.getItem(key);
+      if (raw) {
+        this.applyPersisted(JSON.parse(raw) as Partial<PersistedState>);
+        return;
+      }
+    } catch {
+      /* حالت اولیه امن */
+    }
+    const initial = mode === "real" ? (this.nobitexEquityToman() ?? 0) : this.cfg.paperInitialCapital;
+    this.applyPersisted(this.emptyPortfolio(initial));
+  }
+
   // ---------- پیکربندی ----------
 
   setConfig(cfg: StrategyConfig): void {
-    this.cfg = cfg;
-    saveConfig(cfg);
-    configureApi(cfg);
+    this.cfg = normalizeConfig(cfg);
+    saveConfig(this.cfg);
+    configureApi(this.cfg);
     this.notify();
   }
 
   setSymbols(symbols: string[]): void {
     this.symbols = symbols;
     saveSymbols(symbols);
+    this.socket.setSymbols(symbols);
     this.notify();
   }
 
   async setMode(mode: "paper" | "real"): Promise<void> {
+    if (mode === this.mode) return;
     if (mode === "real") {
       const res = await fetch("/api/keys").then((r) => r.json()) as { configured?: boolean; realEnabled?: boolean };
       if (!res.configured || !res.realEnabled) {
@@ -155,26 +262,139 @@ export class BotEngine {
         this.notify();
         return;
       }
-      await this.syncWithExchange();
+      const synced = await this.syncWithExchange();
+      if (!synced) return;
     }
+    this.persist();
     this.mode = mode;
+    this.loadPortfolio(mode);
+    if (mode === "real") {
+      this.reconcileRealPositions();
+      this.revalueRealCash();
+    }
     this.notify();
   }
 
   /** پس از قطع و وصل اتصال، ابتدا سفارش‌ها و موجودی واقعی صرافی همگام‌سازی می‌شود */
-  async syncWithExchange(): Promise<void> {
-    if (this.mode !== "real") return;
+  async syncWithExchange(): Promise<boolean> {
+    if (this.accountSyncPromise) return this.accountSyncPromise;
+    this.accountSyncPromise = (async () => {
+      try {
+        const data = await fetch("/api/account", { cache: "no-store" }).then((r) => {
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          return r.json();
+        }) as NobitexAccount;
+        this.account = data;
+        if (this.mode === "real") {
+          this.reconcileRealPositions();
+          this.revalueRealCash();
+        }
+        this.notice = `همگام‌سازی با نوبیتکس انجام شد — ${Object.keys(data.totalBalances ?? data.balances ?? {}).length} موجودی و ${data.openOrders?.length ?? 0} سفارش باز مشاهده شد.`;
+        this.notify();
+        return true;
+      } catch (err) {
+        this.notice = `همگام‌سازی با صرافی ناموفق بود: ${(err as Error).message}`;
+        this.mode = "paper";
+        this.notify();
+        return false;
+      }
+    })();
     try {
-      const data = await fetch("/api/account").then((r) => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json();
-      }) as { balances: Record<string, number>; openOrders: unknown[] };
-      this.account = data;
-      this.notice = `همگام‌سازی با نوبیتکس انجام شد — ${Object.keys(data.balances ?? {}).length} موجودی و ${data.openOrders?.length ?? 0} سفارش باز مشاهده شد.`;
-    } catch (err) {
-      this.notice = `همگام‌سازی با صرافی ناموفق بود: ${(err as Error).message}`;
+      return await this.accountSyncPromise;
+    } finally {
+      this.accountSyncPromise = null;
     }
-    this.notify();
+  }
+
+  /** ارزش روز موجودی واقعی نوبیتکس به تومان؛ null یعنی هنوز همگام نشده است. */
+  nobitexEquityToman(): number | null {
+    if (!this.account) return null;
+    const balances = this.account.totalBalances ?? this.account.balances;
+    let total = 0;
+    for (const [coin, amount] of Object.entries(balances)) {
+      if (coin === "RLS" || coin === "IRR") total += amount / 10;
+      else if (coin === "IRT") total += amount;
+      else {
+        const price = this.scans[`${coin}IRT`]?.lastPrice;
+        if (price && isFinite(price)) total += amount * price;
+      }
+    }
+    return total;
+  }
+
+  /** دفتر واقعی از ارزش صرافی جدا از دفتر Paper نگهداری می‌شود. */
+  private revalueRealCash(): void {
+    const exchangeEquity = this.nobitexEquityToman();
+    if (exchangeEquity === null || !Number.isFinite(exchangeEquity)) return;
+    const trackedMarketValue = this.positions.reduce((sum, p) => {
+      const price = this.scans[p.symbol]?.lastPrice || p.entry;
+      return sum + p.qty * price;
+    }, 0);
+    // اگر قیمت همه دارایی‌ها هنوز موجود نباشد، مقدار منفی را وارد دفتر نمی‌کنیم.
+    if (exchangeEquity >= trackedMarketValue) this.cash = exchangeEquity - trackedMarketValue;
+    this.peakEquity = Math.max(this.peakEquity, exchangeEquity);
+  }
+
+  /** بازسازی پوزیشن‌های خود ربات از دفتر رمزنگاری‌شده سرور پس از restart/reconnect. */
+  private reconcileRealPositions(): void {
+    const records = (this.account?.botOrders ?? [])
+      .filter((record) => !record.reconciliationRequired && record.filledQty > 0 && record.averagePrice > 0)
+      .sort((a, b) => a.createdAt - b.createdAt);
+    if (!records.length) return;
+
+    const positionIds = new Set(records.map((record) => record.positionId).filter(Boolean));
+    const next = this.positions.filter((position) => !positionIds.has(position.id));
+    for (const positionId of positionIds) {
+      const buys = records.filter((record) => record.positionId === positionId && record.side === "buy");
+      if (!buys.length) continue;
+      const sells = records.filter((record) => record.positionId === positionId && record.side === "sell");
+      const boughtQty = buys.reduce((sum, record) => sum + record.filledQty, 0);
+      const soldQty = sells.reduce((sum, record) => sum + record.filledQty, 0);
+      let qty = Math.max(0, boughtQty - soldQty);
+      const first = buys[0];
+      const existing = this.positions.find((position) => position.id === positionId);
+      const coin = first.symbol.slice(0, -3);
+      const exchangeQty = Number((this.account?.totalBalances ?? this.account?.balances ?? {})[coin]);
+      if (Number.isFinite(exchangeQty)) qty = Math.min(qty, Math.max(0, exchangeQty));
+      if (qty <= 1e-12) continue;
+
+      const entry = buys.reduce((sum, record) => sum + record.averagePrice * record.filledQty, 0) / boughtQty;
+      const initialStop = first.stop && first.stop < entry ? first.stop : entry * 0.98;
+      const stop = existing?.stop ?? initialStop;
+      const target = existing?.target ?? (first.target && first.target > entry ? first.target : entry + (entry - initialStop) * this.cfg.minRR);
+      const legs = sells.map((record) => {
+        const fee = record.filledQty * record.averagePrice * (this.cfg.feePct / 100);
+        return {
+          qty: record.filledQty,
+          price: record.averagePrice,
+          time: record.createdAt,
+          reason: record.reason || "خروج همگام‌شده از نوبیتکس",
+          pnl: (record.averagePrice - entry) * record.filledQty - fee,
+          fee,
+        };
+      });
+      next.push({
+        id: positionId,
+        symbol: first.symbol,
+        side: "buy",
+        qty,
+        entry,
+        stop,
+        initialStop: existing?.initialStop ?? initialStop,
+        target,
+        rr: existing?.rr ?? first.rr ?? ((target - entry) / Math.max(entry - initialStop, Number.EPSILON)),
+        openedAt: existing?.openedAt ?? first.signalTime ?? first.createdAt,
+        atr: existing?.atr ?? first.atr ?? Math.max(entry - initialStop, Number.EPSILON),
+        trailingActive: existing?.trailingActive ?? false,
+        breakEvenDone: existing?.breakEvenDone ?? false,
+        partialDone: existing?.partialDone ?? (soldQty > 0),
+        notional: qty * entry,
+        legs,
+        mode: "real",
+        signalScore: existing?.signalScore ?? first.signalScore ?? this.cfg.minConfirmations,
+      });
+    }
+    this.positions = next;
   }
 
   // ---------- زمان‌بندی ----------
@@ -182,6 +402,7 @@ export class BotEngine {
   start(): void {
     if (this.running) return;
     this.running = true;
+    this.socket.start(this.symbols);
     this.scheduleNext();
     this.timer = setInterval(() => {
       if (this.nextTick && Date.now() >= this.nextTick) void this.tick();
@@ -192,6 +413,7 @@ export class BotEngine {
 
   stop(): void {
     this.running = false;
+    this.socket.stop();
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
     this.nextTick = null;
@@ -247,9 +469,9 @@ export class BotEngine {
 
           scans[symbol] = {
             symbol,
-            lastPrice: candles1h[candles1h.length - 1].close,
-            changePct24h,
-            volume24h,
+            lastPrice: this.realtimeMarkets[symbol]?.price ?? candles1h[candles1h.length - 1].close,
+            changePct24h: this.realtimeMarkets[symbol]?.changePct24h ?? changePct24h,
+            volume24h: this.realtimeMarkets[symbol]?.volume24h ?? volume24h,
             liquidityRank: 0,
             signal,
             status: signal?.qualified
@@ -296,6 +518,41 @@ export class BotEngine {
     };
   }
 
+  private applyRealtimeMarket(update: RealtimeMarketUpdate): void {
+    this.realtimeMarkets[update.symbol] = { ...this.realtimeMarkets[update.symbol], ...update };
+    const scan = this.scans[update.symbol];
+    if (scan) {
+      if (update.price !== undefined && update.price > 0) scan.lastPrice = update.price;
+      if (update.changePct24h !== undefined) scan.changePct24h = update.changePct24h;
+      if (update.volume24h !== undefined) scan.volume24h = update.volume24h;
+      scan.updatedAt = update.receivedAt;
+    }
+    // Several subscribed channels can publish together; cap React renders.
+    if (!this.realtimeNotifyTimer) {
+      this.realtimeNotifyTimer = setTimeout(() => {
+        this.realtimeNotifyTimer = null;
+        this.notifyUi();
+      }, 250);
+    }
+  }
+
+  private applyPrivateEvent(kind: "order" | "trade", data: Record<string, unknown>): void {
+    const id = Number(data.orderId ?? data.id);
+    if (kind === "order" && this.account) {
+      const rest = this.account.openOrders.filter((item) => {
+        const value = item as { id?: unknown; orderId?: unknown };
+        return Number(value.orderId ?? value.id) !== id;
+      });
+      const status = String(data.status ?? "").toLowerCase();
+      this.account.openOrders = status === "done" || status === "canceled" ? rest : [data, ...rest];
+    }
+    this.notice = kind === "trade"
+      ? `معامله خصوصی نوبیتکس دریافت شد${id ? ` — سفارش ${id}` : ""}.`
+      : `وضعیت سفارش نوبیتکس به‌روز شد${id ? ` — ${id}` : ""}.`;
+    this.notifyUi();
+    if (kind === "trade" && this.mode === "real") void this.syncWithExchange();
+  }
+
   /** فقط کندل‌های بسته‌شده — کندل در حال تشکیل حذف می‌شود (بدون look-ahead) */
   private async fetchClosed(symbol: string, tf: keyof typeof RES, count: number): Promise<Candle[]> {
     const to = Date.now();
@@ -325,14 +582,34 @@ export class BotEngine {
       const result = managePosition(current, candle, atr1h, this.cfg);
 
       if (result.stopHit) {
-        this.finalizeClose(current, result.stopHit.price, result.stopHit.reason, candle.time);
+        await this.finalizeClose(current, result.stopHit.price, result.stopHit.reason, candle.time);
         return;
       }
+      let nextPosition = result.position;
       if (result.partialClose && result.position) {
-        this.applyPartial(current, result.partialClose.qty, result.partialClose.price, candle.time);
+        const execution = await this.executePartial(current, result.partialClose.qty, result.partialClose.price, candle.time);
+        if (!execution) return;
+        const remainingQty = Math.max(0, current.qty - execution.qty);
+        nextPosition = {
+          ...result.position,
+          qty: remainingQty,
+          notional: remainingQty * current.entry,
+          partialDone: true,
+          legs: [
+            ...current.legs,
+            {
+              qty: execution.qty,
+              price: execution.price,
+              time: candle.time,
+              reason: `خروج جزئی در RR=${this.cfg.partialExitRR}`,
+              pnl: (execution.price - current.entry) * execution.qty - execution.fee,
+              fee: execution.fee,
+            },
+          ],
+        };
       }
-      if (result.position && result.updated) {
-        this.positions = this.positions.map((p) => (p.id === current.id ? result.position! : p));
+      if (nextPosition && result.updated) {
+        this.positions = this.positions.map((p) => (p.id === current.id ? nextPosition! : p));
       }
     }
 
@@ -341,7 +618,7 @@ export class BotEngine {
     if (!still) return;
     if (chochDown) {
       const price = candles1h[candles1h.length - 1].close;
-      this.finalizeClose(still, price, "choch_down", Date.now());
+      await this.finalizeClose(still, price, "choch_down", Date.now());
       return;
     }
 
@@ -349,56 +626,149 @@ export class BotEngine {
     const lastPrice = candles1h[candles1h.length - 1].close;
     const atr1h = lastAtr(candles1h, this.cfg.atrPeriod) ?? still.atr;
     const levels = allLevels(candles1h, atr1h);
-    const resistance = nearestResistance(levels, lastPrice * 1.02);
+    const resistance = nearestExitLevel(levels, lastPrice);
     const nearResistance = resistance && Math.abs(resistance.price - lastPrice) <= this.cfg.levelProximityAtr * atr1h;
     const bearish = detectBearishPatterns(candles1h);
     if (nearResistance && bearish.length) {
-      this.finalizeClose(still, lastPrice, "bearish_confirmation", Date.now());
+      const closed = await this.finalizeClose(still, lastPrice, "bearish_confirmation", Date.now());
+      if (!closed) return;
       this.notice = `خروج از ${symbol}: ${PATTERN_LABELS[bearish[0].name]} روی مقاومت`;
     }
   }
 
-  /** ارسال سفارش فروش بازار برای خروج واقعی (طبق مستندات POST /api/orders نوبیتکس) */
-  private placeRealSell(symbol: string, qty: number, why: string): void {
-    void fetch("/api/order", {
+  private async placeRealOrder(input: {
+    symbol: string;
+    side: "buy" | "sell";
+    qty: number;
+    price: number;
+    stop?: number;
+    clientOrderId: string;
+    why: string;
+    positionId: string;
+    target?: number;
+    rr?: number;
+    atr?: number;
+    signalTime?: number;
+    signalScore?: number;
+  }): Promise<RealOrderResult | null> {
+    try {
+      const response = await fetch("/api/order", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ symbol, side: "sell", type: "market", qty }),
-    })
-      .then(async (r) => {
-        if (!r.ok) {
-          const text = await r.text().catch(() => "");
-          this.notice = `سفارش فروش واقعی ${symbol} (${why}) رد شد: ${text.slice(0, 150)}`;
-          this.notify();
-        }
-      })
-      .catch((err: unknown) => {
-        this.notice = `خطای سفارش فروش واقعی ${symbol} (${why}): ${(err as Error).message}`;
-        this.notify();
+        body: JSON.stringify({
+          symbol: input.symbol,
+          side: input.side,
+          type: "market",
+          qty: input.qty,
+          price: input.price,
+          stop: input.stop,
+          clientOrderId: input.clientOrderId,
+          positionId: input.positionId,
+          target: input.target,
+          rr: input.rr,
+          atr: input.atr,
+          signalTime: input.signalTime,
+          signalScore: input.signalScore,
+          reason: input.why,
+        }),
       });
+      if (!response.ok) {
+        const text = await response.text().catch(() => "");
+        this.notice = `سفارش واقعی ${input.symbol} (${input.why}) رد شد: ${text.slice(0, 180)}`;
+        this.notify();
+        return null;
+      }
+      return await response.json() as RealOrderResult;
+    } catch (error) {
+      this.notice = `خطای سفارش واقعی ${input.symbol} (${input.why}): ${(error as Error).message}`;
+      this.notify();
+      return null;
+    }
   }
 
-  private applyPartial(p: Position, qty: number, price: number, time: number): void {
-    if (p.mode === "real") this.placeRealSell(p.symbol, qty, "خروج جزئی");
+  private async executePartial(p: Position, requestedQty: number, expectedPrice: number, time: number): Promise<{ qty: number; price: number; fee: number } | null> {
+    let qty = requestedQty;
+    let price = expectedPrice * (1 - this.cfg.slippagePct / 100);
+    if (p.mode === "real") {
+      const order = await this.placeRealOrder({
+        symbol: p.symbol,
+        side: "sell",
+        qty: requestedQty,
+        price: this.scans[p.symbol]?.lastPrice || expectedPrice,
+        clientOrderId: this.orderClientId("sell", p.symbol, time),
+        why: "خروج جزئی",
+        positionId: p.id,
+      });
+      if (!order || order.reconciliationRequired || order.filledQuantity <= 0 || order.averagePrice <= 0) {
+        this.notice = `خروج جزئی ${p.symbol} قطعی نشد؛ دفتر داخلی تغییر نکرد و همگام‌سازی لازم است.`;
+        void this.syncWithExchange();
+        this.notify();
+        return null;
+      }
+      qty = Math.min(requestedQty, order.filledQuantity);
+      price = order.averagePrice;
+    }
     const fee = qty * price * (this.cfg.feePct / 100);
     this.cash += qty * price - fee;
-    const leg = p.legs[p.legs.length - 1];
-    if (leg) leg.time = time;
     this.markEquity(time);
+    return { qty, price, fee };
   }
 
-  private finalizeClose(p: Position, price: number, reason: Trade["exitReason"], time: number): void {
-    if (p.mode === "real" && p.qty > 0) this.placeRealSell(p.symbol, p.qty, EXIT_REASON_LABELS[reason]);
-    const fill = price * (1 - this.cfg.slippagePct / 100);
-    const remainingValue = fill * p.qty;
+  private async finalizeClose(p: Position, price: number, reason: Trade["exitReason"], time: number): Promise<boolean> {
+    let closedQty = p.qty;
+    let fill = price * (1 - this.cfg.slippagePct / 100);
+    if (p.mode === "real" && p.qty > 0) {
+      const order = await this.placeRealOrder({
+        symbol: p.symbol,
+        side: "sell",
+        qty: p.qty,
+        price,
+        clientOrderId: this.orderClientId("sell", p.symbol, time),
+        why: EXIT_REASON_LABELS[reason],
+        positionId: p.id,
+      });
+      if (!order || order.reconciliationRequired || order.filledQuantity <= 0 || order.averagePrice <= 0) {
+        this.notice = `خروج واقعی ${p.symbol} قطعی نشد؛ پوزیشن داخلی باز ماند و همگام‌سازی لازم است.`;
+        void this.syncWithExchange();
+        this.notify();
+        return false;
+      }
+      closedQty = Math.min(p.qty, order.filledQuantity);
+      fill = order.averagePrice;
+    }
+    const remainingValue = fill * closedQty;
     const fee = remainingValue * (this.cfg.feePct / 100);
     this.cash += remainingValue - fee;
 
+    if (closedQty < p.qty * (1 - 1e-8)) {
+      const remainingQty = p.qty - closedQty;
+      this.positions = this.positions.map((item) => item.id === p.id ? {
+        ...item,
+        qty: remainingQty,
+        notional: remainingQty * p.entry,
+        legs: [...item.legs, {
+          qty: closedQty,
+          price: fill,
+          time,
+          reason: `${EXIT_REASON_LABELS[reason]} (اجرای ناقص)`,
+          pnl: (fill - p.entry) * closedQty - fee,
+          fee,
+        }],
+      } : item);
+      this.notice = `فقط بخشی از خروج ${p.symbol} انجام شد؛ ${remainingQty} واحد هنوز باز است.`;
+      this.markEquity(time);
+      this.notify();
+      return false;
+    }
+
     const partialPnl = p.legs.reduce((a, l) => a + l.pnl, 0);
-    const finalPnl = (fill - p.entry) * p.qty - fee;
-    const totalPnl = partialPnl + finalPnl - p.notional * (this.cfg.feePct / 100);
+    const finalPnl = (fill - p.entry) * closedQty - fee;
     const totalQty = p.qty + p.legs.reduce((a, l) => a + l.qty, 0);
-    const avgExit = totalQty > 0 ? (p.legs.reduce((a, l) => a + l.qty * l.price, 0) + fill * p.qty) / totalQty : fill;
+    const entryNotional = totalQty * p.entry;
+    const entryFee = entryNotional * (this.cfg.feePct / 100);
+    const totalPnl = partialPnl + finalPnl - entryFee;
+    const exitFees = p.legs.reduce((sum, leg) => sum + (leg.fee ?? 0), 0) + fee;
+    const avgExit = totalQty > 0 ? (p.legs.reduce((a, l) => a + l.qty * l.price, 0) + fill * closedQty) / totalQty : fill;
     const riskPerUnit = p.entry - p.initialStop;
 
     const trade: Trade = {
@@ -410,20 +780,21 @@ export class BotEngine {
       exit: avgExit,
       qty: totalQty,
       pnl: totalPnl,
-      pnlPct: p.notional > 0 ? (totalPnl / p.notional) * 100 : 0,
-      fees: fee + p.notional * (this.cfg.feePct / 100),
+      pnlPct: entryNotional > 0 ? (totalPnl / entryNotional) * 100 : 0,
+      fees: entryFee + exitFees,
       rrPlanned: p.rr,
       rrActual: riskPerUnit > 0 ? (avgExit - p.entry) / riskPerUnit : 0,
       exitReason: reason,
       entryReason: `سیگنال Price Action با امتیاز ${p.signalScore}/۸`,
       mode: p.mode,
-      legs: [...p.legs, { qty: p.qty, price: fill, time, reason: EXIT_REASON_LABELS[reason], pnl: finalPnl }],
+      legs: [...p.legs, { qty: closedQty, price: fill, time, reason: EXIT_REASON_LABELS[reason], pnl: finalPnl, fee }],
       holdMs: Math.max(0, time - p.openedAt),
     };
 
     this.trades.push(trade);
     this.positions = this.positions.filter((x) => x.id !== p.id);
     this.markEquity(time);
+    return true;
   }
 
   // ---------- ورود ----------
@@ -447,28 +818,33 @@ export class BotEngine {
       return;
     }
 
-    const fill = signal.entry * (1 + this.cfg.slippagePct / 100);
+    let fill = signal.entry * (1 + this.cfg.slippagePct / 100);
     let qty = sizing.qty;
 
     if (this.mode === "real") {
-      try {
-        const res = await fetch("/api/order", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ symbol, side: "buy", type: "market", qty }),
-        });
-        if (!res.ok) {
-          const text = await res.text().catch(() => "");
-          this.notice = `سفارش واقعی ${symbol} رد شد: ${text.slice(0, 150)}`;
-          return;
-        }
-        // پاسخ سرور طبق مستندات نوبیتکس: { orderId, filledQuantity, ... }
-        const data = (await res.json()) as { orderId?: number | null; filledQuantity?: number };
-        if (data.filledQuantity && data.filledQuantity > 0) qty = data.filledQuantity;
-      } catch (err) {
-        this.notice = `خطای ارسال سفارش واقعی: ${(err as Error).message}`;
+      const order = await this.placeRealOrder({
+        symbol,
+        side: "buy",
+        qty,
+        price: signal.entry,
+        stop: signal.stop,
+        clientOrderId: this.orderClientId("buy", symbol, signal.time),
+        why: "ورود سیگنال Price Action",
+        positionId: `${symbol}-${signal.time}`,
+        target: signal.target,
+        rr: signal.rr,
+        atr: signal.atr1h,
+        signalTime: signal.time,
+        signalScore: signal.score,
+      });
+      if (!order || order.reconciliationRequired || order.filledQuantity <= 0 || order.averagePrice <= 0) {
+        this.notice = `ورود واقعی ${symbol} fill قطعی ندارد؛ پوزیشن داخلی ساخته نشد و همگام‌سازی لازم است.`;
+        void this.syncWithExchange();
+        this.notify();
         return;
       }
+      qty = Math.min(qty, order.filledQuantity);
+      fill = order.averagePrice;
     }
 
     const notional = qty * fill;
@@ -505,7 +881,31 @@ export class BotEngine {
     if (!p) return;
     const scan = this.scans[p.symbol];
     const price = scan?.lastPrice || p.entry;
-    this.finalizeClose(p, price, "manual_close", Date.now());
+    void this.finalizeClose(p, price, "manual_close", Date.now());
+  }
+
+  async cancelExchangeOrder(id: number): Promise<void> {
+    if (this.mode !== "real" || !Number.isInteger(id) || id <= 0) return;
+    try {
+      const response = await fetch("/api/order", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id }),
+      });
+      if (!response.ok) {
+        const text = await response.text().catch(() => "");
+        throw new Error(text.slice(0, 180) || `HTTP ${response.status}`);
+      }
+      this.notice = `درخواست لغو سفارش ${id.toLocaleString("fa-IR")} تأیید شد.`;
+      await this.syncWithExchange();
+    } catch (error) {
+      this.notice = `لغو سفارش ${id.toLocaleString("fa-IR")} ناموفق بود: ${(error as Error).message}`;
+      this.notify();
+    }
+  }
+
+  private orderClientId(side: "buy" | "sell", symbol: string, time: number): string {
+    return `tb-${side}-${symbol}-${Math.floor(time).toString(36)}`.slice(0, 64);
   }
 
   // ---------- وضعیت ----------
@@ -529,7 +929,10 @@ export class BotEngine {
   stats(): BotStats {
     const eq = this.currentEquity();
     const dd = drawdownPct(eq, this.peakEquity);
-    const metrics = computeMetrics(this.trades, this.equity, this.cfg.paperInitialCapital);
+    const initialCapital = this.mode === "paper"
+      ? this.cfg.paperInitialCapital
+      : (this.equity[0]?.equity ?? this.peakEquity ?? eq);
+    const metrics = computeMetrics(this.trades, this.equity, initialCapital);
     const engaged = this.positions.reduce((a, p) => a + p.notional, 0);
     return {
       ...metrics,
@@ -555,6 +958,13 @@ export class BotEngine {
     const reports: DailyReport[] = [];
     for (const [date, list] of byDate) {
       const wins = list.filter((t) => t.pnl > 0).length;
+      const dailyEquity = this.equity.filter((point) => formatDate(point.time) === date);
+      let dailyPeak = dailyEquity[0]?.equity ?? 0;
+      let dailyMaxDrawdown = 0;
+      for (const point of dailyEquity) {
+        dailyPeak = Math.max(dailyPeak, point.equity);
+        dailyMaxDrawdown = Math.max(dailyMaxDrawdown, drawdownPct(point.equity, dailyPeak));
+      }
       reports.push({
         date,
         trades: list.length,
@@ -562,7 +972,7 @@ export class BotEngine {
         losses: list.length - wins,
         pnl: list.reduce((a, t) => a + t.pnl, 0),
         winRate: list.length ? (wins / list.length) * 100 : 0,
-        maxDrawdownPct: 0,
+        maxDrawdownPct: dailyMaxDrawdown,
       });
     }
     return reports.reverse();

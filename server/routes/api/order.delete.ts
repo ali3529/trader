@@ -1,13 +1,14 @@
 import { defineHandler } from "nitro";
 import { readBody, createError } from "nitro/h3";
 import { privateRequest, loadKeys } from "../../utils/nobitex";
+import { assertSensitiveRequest } from "../../utils/requestSecurity";
 
 /**
  * لغو سفارش — طبق مستندات رسمی نوبیتکس:
- * DELETE /api/orders/{order-id} (شناسه عددی سفارش در مسیر؛ بدون بدنه)
- * پاسخ موفق: { status: "OK" }
+ * POST /market/orders/update-status با status=canceled.
  */
 export default defineHandler(async (event) => {
+  assertSensitiveRequest(event, { mutation: true });
   const keys = loadKeys();
   if (!keys || !keys.realEnabled) {
     throw createError({ statusCode: 403, statusMessage: "معامله واقعی فعال نیست" });
@@ -15,6 +16,9 @@ export default defineHandler(async (event) => {
   const body = await readBody<{ id?: string | number }>(event);
   const id = Number(body?.id);
   if (!Number.isInteger(id) || id <= 0) throw createError({ statusCode: 400, statusMessage: "شناسه سفارش نامعتبر" });
-  await privateRequest("DELETE", `/orders/${id}`);
+  await privateRequest("POST", "/market/orders/update-status", {
+    body: { order: id, status: "canceled" },
+    retryable: true,
+  });
   return { ok: true };
 });
