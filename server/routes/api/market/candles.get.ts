@@ -34,6 +34,12 @@ export default defineHandler(async (event) => {
 
   const data: RawCandles = Array.isArray(raw) ? (raw[0] ?? {}) : raw;
   const nums = (arr: number[] | undefined) => (arr ?? []).map(Number);
+  if (!Array.isArray(data.time) || data.time.length === 0) {
+    throw createError({
+      statusCode: 502,
+      statusMessage: `نوبیتکس کندلی برنگرداند — پاسخ خام: ${JSON.stringify(raw).slice(0, 200)}`,
+    });
+  }
   return {
     time: nums(data.time).map((t) => t * 1000),
     open: nums(data.open),

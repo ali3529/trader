@@ -94,19 +94,23 @@ export async function publicGet(path: string, params: Record<string, string>, sa
   const url = `${baseUrl(sandbox)}${path}${qs ? `?${qs}` : ""}`;
   let lastErr: unknown;
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    const started = Date.now();
     try {
       const res = await fetch(url, { headers: { Accept: "application/json" } });
+      const latency = Date.now() - started;
+      const text = await res.text().catch(() => "");
+      console.log(`[nobitex] GET ${url} -> HTTP ${res.status} in ${latency}ms | body: ${text.slice(0, 200)}`);
       if (res.status === 429) {
         lastErr = new Error("rate limited");
         if (attempt < MAX_RETRIES) await sleep(RETRY_DELAY_MS);
         continue;
       }
       if (!res.ok) {
-        const text = await res.text().catch(() => "");
         throw new Error(`nobitex ${res.status}: ${text.slice(0, 200)}`);
       }
-      return await res.json();
+      return JSON.parse(text);
     } catch (err) {
+      console.log(`[nobitex] GET ${url} -> FAILED in ${Date.now() - started}ms | ${(err as Error).message}`);
       lastErr = err;
       if (attempt < MAX_RETRIES) await sleep(RETRY_DELAY_MS);
     }
