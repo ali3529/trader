@@ -125,17 +125,36 @@ function extractJson(raw: string): string {
   return unfenced.slice(start, end + 1);
 }
 
+/** مدل‌های ابری گاهی کلیدهای فارسی/متفاوت یا یک سطح تودرتو برمی‌گردانند */
+function findSummary(value: unknown, depth = 0): string {
+  if (typeof value === "string" && value.trim()) return value.trim();
+  if (depth >= 2 || !value || typeof value !== "object" || Array.isArray(value)) return "";
+  const obj = value as Record<string, unknown>;
+  for (const key of ["summary", "خلاصه", "explanation", "analysis", "text", "content", "result", "note"]) {
+    const found = findSummary(obj[key], depth + 1);
+    if (found) return found;
+  }
+  return "";
+}
+
 /** تحمل‌پذیر نسبت به خروجی مدل: انواع را coerce می‌کند به‌جای رد کردن کل پاسخ */
-function normalizeAnalysis(parsed: Partial<QwenAnalysis>): QwenAnalysis {
-  const summary = typeof parsed.summary === "string" ? parsed.summary.trim() : "";
-  if (!summary) throw new Error("پاسخ مدل خلاصه (summary) نداشت");
-  const verdictRaw = String(parsed.verdict ?? "").toLowerCase();
+function normalizeAnalysis(parsed: Partial<QwenAnalysis> | string, rawHint = ""): QwenAnalysis {
+  const source: Partial<QwenAnalysis> = typeof parsed === "string" ? { summary: parsed } : parsed;
+  const summary = (typeof source.summary === "string" ? source.summary : findSummary(source)).trim();
+  if (!summary) {
+    throw new Error(`پاسخ مدل خلاصه (summary) نداشت${rawHint ? ` — نمونهٔ پاسخ: ${rawHint}` : ""}`);
+  }
+  const verdictRaw = String(source.verdict ?? findSummary(source.verdict) ?? "").toLowerCase();
   const verdict: QwenAnalysis["verdict"] = (["support", "neutral", "caution"] as const).includes(
     verdictRaw as QwenAnalysis["verdict"]
   )
     ? (verdictRaw as QwenAnalysis["verdict"])
-    : "neutral";
-  const confidenceRaw = Number(parsed.confidence);
+    : verdictRaw.includes("support") || verdictRaw.includes("حمایت")
+      ? "support"
+      : verdictRaw.includes("caution") || verdictRaw.includes("احتیاط") || verdictRaw.includes("risk")
+        ? "caution"
+        : "neutral";
+  const confidenceRaw = Number(source.confidence);
   const confidence = Number.isFinite(confidenceRaw) ? Math.max(0, Math.min(100, confidenceRaw)) : 50;
   const asStrings = (value: unknown): string[] =>
     Array.isArray(value)
@@ -145,9 +164,33 @@ function normalizeAnalysis(parsed: Partial<QwenAnalysis>): QwenAnalysis {
     summary: summary.slice(0, 800),
     verdict,
     confidence,
-    observations: asStrings(parsed.observations),
-    risks: asStrings(parsed.risks),
+    observations: asStrings(source.observations),
+    risks: asStrings(source.risks),
   };
+}
+
+/** مسیر ابری schema ساختاری نمی‌گیرد؛ پس کلیدها باید صریح در پرامپت بیایند */
+const SCHEMA_INSTRUCTION = [
+  "خروجی فقط یک شیء JSON معتبر با دقیقاً این کلیدها باشد:",
+  '{"summary": رشتهٔ فارسی کوتاه, "verdict": یکی از support یا neutral یا caution, "confidence": عدد بین 0 تا 100, "observations": آرایهٔ حداکثر 4 رشتهٔ فارسی, "risks": آرایهٔ حداکثر 4 رشتهٔ فارسی}',
+  "هیچ متن، توضیح یا کدی خارج از این شیء JSON ننویس.",
+].join(" ");
+
+/** برخی درگاه‌ها content را رشته و برخی آرایهٔ بخش‌ها برمی‌گردانند */
+function messageContent(message: unknown): string {
+  if (!message || typeof message !== "object") return "";
+  const content = (message as { content?: unknown }).content;
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((part) =>
+        part && typeof part === "object" && typeof (part as { text?: unknown }).text === "string"
+          ? ((part as { text: string }).text)
+          : "",
+      )
+      .join("");
+  }
+  return "";
 }
 
 const JSON_SCHEMA = {
@@ -179,7 +222,7 @@ async function analyzeWithOllama(
       format: JSON_SCHEMA,
       options: { temperature: 0.1, num_predict: 450 },
       messages: [
-        { role: "system", content: SYSTEM_PROMPT },
+        { role: "system", content: `${SYSTEM_PROMPT} ${SCHEMA_INSTRUCTION}` },
         { role: "user", content: `این snapshot سیگنال را بررسی کن:\n${JSON.stringify(marketSnapshot)}` },
       ],
     }),
@@ -188,10 +231,10 @@ async function analyzeWithOllama(
     const text = await response.text().catch(() => "");
     throw new Error(`Ollama HTTP ${response.status}${text ? `: ${text.slice(0, 180)}` : ""}`);
   }
-  const body = (await response.json()) as { message?: { content?: string } };
-  const raw = body.message?.content;
+  const body = (await response.json()) as { message?: unknown };
+  const raw = messageContent(body.message);
   if (!raw) throw new Error("پاسخ Ollama خالی بود");
-  return normalizeAnalysis(JSON.parse(extractJson(raw)) as Partial<QwenAnalysis>);
+  return normalizeAnalysis(JSON.parse(extractJson(raw)) as Partial<QwenAnalysis>, raw.slice(0, 140));
 }
 
 async function analyzeWithQwenCloud(
@@ -211,8 +254,8 @@ async function analyzeWithQwenCloud(
       temperature: 0.2,
       response_format: { type: "json_object" },
       messages: [
-        { role: "system", content: `${SYSTEM_PROMPT} خروجی فقط یک شیء JSON معتبر باشد.` },
-        { role: "user", content: `این snapshot سیگنال را بررسی کن و فقط JSON برگردان:\n${JSON.stringify(marketSnapshot)}` },
+        { role: "system", content: `${SYSTEM_PROMPT} ${SCHEMA_INSTRUCTION}` },
+        { role: "user", content: `این snapshot سیگنال را بررسی کن و فقط شیء JSON خواسته‌شده را برگردان:\n${JSON.stringify(marketSnapshot)}` },
       ],
     }),
   });
@@ -227,11 +270,11 @@ async function analyzeWithQwenCloud(
     throw new Error(`Qwen HTTP ${response.status}${text ? `: ${text.slice(0, 180)}` : ""}`);
   }
   const body = (await response.json()) as {
-    choices?: Array<{ message?: { content?: string } }>;
+    choices?: Array<{ message?: unknown }>;
   };
-  const raw = body.choices?.[0]?.message?.content;
+  const raw = messageContent(body.choices?.[0]?.message);
   if (!raw) throw new Error("پاسخ Qwen خالی بود");
-  return normalizeAnalysis(JSON.parse(extractJson(raw)) as Partial<QwenAnalysis>);
+  return normalizeAnalysis(JSON.parse(extractJson(raw)) as Partial<QwenAnalysis>, raw.slice(0, 140));
 }
 
 /** تحلیل مشورتی snapshot سیگنال با ارائه‌دهندهٔ انتخاب‌شده در تنظیمات */
