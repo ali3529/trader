@@ -211,7 +211,10 @@ export async function privateRequest<T>(
 
 export interface MarketInfo {
   id: number;
+  /** نماد جفت‌ارز نرمال‌شده، مثل BTCIRR */
   symbol: string;
+  /** نماد مورد انتظار API چارت، مثل btcirr (از trading_chart_settings.ramzinex) */
+  chartSymbol: string;
 }
 
 interface PairsCache {
@@ -224,33 +227,24 @@ interface PairsCache {
 let pairsCache: PairsCache | null = null;
 const norm = (s: string): string => s.toUpperCase().replace(/[^A-Z0-9]/g, "");
 
-/** رمزینکس نماد را در قالب‌های متفاوت می‌فرستد (رشته، شیء base/quote و…)؛ همه را پوشش می‌دهیم */
-function extractPairSymbol(item: Record<string, unknown>): string {
-  const stringFields = [item.symbol, item.name, item.pair, item.title, item.market, item.slug];
-  for (const value of stringFields) {
-    if (typeof value === "string" && value.trim()) return value.trim();
-  }
-  const baseKeys = ["base", "baseSymbol", "baseCurrency", "baseAsset", "from", "currency"];
-  const quoteKeys = ["quote", "quoteSymbol", "quoteCurrency", "quoteAsset", "to"];
-  const pick = (obj: Record<string, unknown>, keys: string[]): string => {
-    for (const key of keys) {
-      const value = obj[key];
-      if (typeof value === "string" && value.trim()) return value.trim();
-    }
-    return "";
-  };
-  const symbolObj = typeof item.symbol === "object" && item.symbol !== null ? (item.symbol as Record<string, unknown>) : null;
-  if (symbolObj) {
-    const flat = pick(symbolObj, ["value", "name", "symbol", "title"]);
-    if (flat) return flat;
-    const base = pick(symbolObj, baseKeys);
-    const quote = pick(symbolObj, quoteKeys);
-    if (base && quote) return `${base}${quote}`;
-  }
-  const base = pick(item, baseKeys);
-  const quote = pick(item, quoteKeys);
-  if (base && quote) return `${base}${quote}`;
-  return "";
+/**
+ * اسکیمای واقعی /pairs (نمونهٔ تأییدشده از سرور رمزینکس):
+ * { id, slug, base_currency:{ symbol:{ en:"btc" } }, quote_currency:{ symbol:{ en:"irr" } },
+ *   trading_chart_settings:{ ramzinex:"btcirr" } }
+ * برخی نمادها فاصله/پرانتز دارند (مثل "xaut (gold mili gram)") → فقط اولین کلمه را برمی‌داریم.
+ */
+function extractPair(item: Record<string, unknown>): { symbol: string; chartSymbol: string } | null {
+  const firstWord = (v: unknown): string =>
+    typeof v === "string" ? v.trim().split(/[\s(]/)[0] : "";
+  const baseObj = item.base_currency as Record<string, unknown> | undefined;
+  const quoteObj = item.quote_currency as Record<string, unknown> | undefined;
+  const base = firstWord((baseObj?.symbol as Record<string, unknown> | undefined)?.en);
+  const quote = firstWord((quoteObj?.symbol as Record<string, unknown> | undefined)?.en);
+  if (!base || !quote) return null;
+  const symbol = `${base}${quote}`.toUpperCase();
+  const chartCfg = item.trading_chart_settings as Record<string, unknown> | undefined;
+  const chartRaw = typeof chartCfg?.ramzinex === "string" ? chartCfg.ramzinex.trim() : "";
+  return { symbol, chartSymbol: chartRaw || symbol.toLowerCase() };
 }
 
 async function loadPairs(): Promise<PairsCache> {
@@ -268,10 +262,10 @@ async function loadPairs(): Promise<PairsCache> {
   const byId = new Map<number, string>();
   for (const item of pairs ?? []) {
     const id = Number(item.id ?? item.pair_id);
-    const symbol = extractPairSymbol(item);
-    const key = norm(symbol);
-    if (!Number.isInteger(id) || id <= 0 || !key) continue;
-    byNorm.set(key, { id, symbol });
+    const extracted = extractPair(item);
+    const key = extracted ? norm(extracted.symbol) : "";
+    if (!Number.isInteger(id) || id <= 0 || !key || !extracted) continue;
+    byNorm.set(key, { id, symbol: extracted.symbol, chartSymbol: extracted.chartSymbol });
     byId.set(id, key);
   }
   if (!byNorm.size) throw new RamzinexError("فهرست بازارهای رمزینکس خالی است", 502);
@@ -335,7 +329,7 @@ export interface RzCandles {
 export async function fetchCandles(symbol: string, minutes: number, fromSec: number, toSec: number): Promise<RzCandles> {
   const market = await resolveMarket(symbol);
   const data = await publicGet<Partial<RzCandles> & { s?: string }>("/chart/tv/history", {
-    symbol: market.symbol,
+    symbol: market.chartSymbol,
     resolution: ramzinexResolution(minutes),
     from: String(Math.floor(fromSec)),
     to: String(Math.floor(toSec)),
