@@ -15,7 +15,7 @@ function isBearish(c: Candle): boolean {
 }
 
 /** Bullish Engulfing: کندل صعودی که بدنه کندل نزولی قبلی را کامل می‌پوشاند */
-function bullishEngulfing(candles: Candle[], i: number): boolean {
+function bullishEngulfing(candles: Candle[], i: number, cfg?: StrategyConfig): boolean {
   const a = candles[i - 1];
   const b = candles[i];
   return (
@@ -23,7 +23,7 @@ function bullishEngulfing(candles: Candle[], i: number): boolean {
     isBullish(b) &&
     b.close >= a.open &&
     b.open <= a.close &&
-    body(b) > body(a)
+    body(b) >= body(a) * (cfg?.engulfingBodyRatio ?? 1)
   );
 }
 
@@ -49,7 +49,9 @@ function hammer(candles: Candle[], i: number, cfg?: StrategyConfig): boolean {
   const localLookback = cfg?.hammerLocalLookback ?? 5;
   const localLow = Math.min(...candles.slice(Math.max(0, i - localLookback), i).map((x) => x.low));
   const tolerance = (cfg?.hammerLowTolerancePct ?? 0.5) / 100;
-  return lowerWick >= body(c) * (cfg?.hammerWickBodyRatio ?? 2) && upperWick <= body(c) && c.low <= localLow * (1 + tolerance);
+  return lowerWick >= body(c) * (cfg?.hammerWickBodyRatio ?? 2) &&
+    upperWick <= body(c) * (cfg?.hammerOppositeWickBodyRatio ?? 1) &&
+    c.low <= localLow * (1 + tolerance);
 }
 
 /** Morning Star: نزولی بزرگ، بدنه کوچک جهش‌کرده، صعودی قوی */
@@ -68,7 +70,7 @@ function morningStar(candles: Candle[], i: number, cfg?: StrategyConfig): boolea
 }
 
 /** Bearish Engulfing برای تأیید خروج */
-function bearishEngulfing(candles: Candle[], i: number): boolean {
+function bearishEngulfing(candles: Candle[], i: number, cfg?: StrategyConfig): boolean {
   const a = candles[i - 1];
   const b = candles[i];
   return (
@@ -76,7 +78,7 @@ function bearishEngulfing(candles: Candle[], i: number): boolean {
     isBearish(b) &&
     b.close <= a.open &&
     b.open >= a.close &&
-    body(b) > body(a)
+    body(b) >= body(a) * (cfg?.engulfingBodyRatio ?? 1)
   );
 }
 

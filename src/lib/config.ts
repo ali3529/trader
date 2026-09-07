@@ -73,6 +73,10 @@ export interface StrategyConfig {
   orderBlockImpulseMult: number;
   /** عمق جست‌وجوی Order Block/FVG بر حسب کندل */
   keyLevelLookbackBars: number;
+  /** حداکثر تعداد هر نوع سطح بازگشتی */
+  maxKeyLevels: number;
+  /** نسبت بدنه میانی FVG به کندل اول */
+  fvgImpulseBodyRatio: number;
   /** حاشیه Stop زیر ساختار بر حسب ATR */
   stopBufferAtr: number;
   /** پنجره اعتبار CHoCH نزولی برای خروج */
@@ -83,8 +87,12 @@ export interface StrategyConfig {
   pinbarOppositeWickRatio: number;
   /** حداکثر سهم بدنه Pin Bar */
   pinbarMaxBodyRatio: number;
+  /** حداقل نسبت بدنه Engulfing به بدنه قبلی */
+  engulfingBodyRatio: number;
   /** حداقل نسبت سایه پایین Hammer به بدنه */
   hammerWickBodyRatio: number;
+  /** حداکثر سایه مخالف Hammer نسبت به بدنه */
+  hammerOppositeWickBodyRatio: number;
   /** پنجره کف محلی Hammer */
   hammerLocalLookback: number;
   /** تلورانس کف Hammer به درصد */
@@ -142,12 +150,16 @@ export const DEFAULT_CONFIG: StrategyConfig = {
   orderBlockBodyPeriod: 20,
   orderBlockImpulseMult: 1.5,
   keyLevelLookbackBars: 40,
+  maxKeyLevels: 5,
+  fvgImpulseBodyRatio: 1,
   stopBufferAtr: 0.15,
   exitChochBars: 4,
   pinbarLongWickRatio: 0.6,
   pinbarOppositeWickRatio: 0.15,
   pinbarMaxBodyRatio: 0.35,
+  engulfingBodyRatio: 1,
   hammerWickBodyRatio: 2,
+  hammerOppositeWickBodyRatio: 1,
   hammerLocalLookback: 5,
   hammerLowTolerancePct: 0.5,
   morningStarFirstBodyRatio: 0.5,
@@ -210,12 +222,16 @@ export function normalizeConfig(value: StrategyConfig): StrategyConfig {
     orderBlockBodyPeriod: Math.round(clamp(cfg.orderBlockBodyPeriod, 5, 100)),
     orderBlockImpulseMult: clamp(cfg.orderBlockImpulseMult, 1, 10),
     keyLevelLookbackBars: Math.round(clamp(cfg.keyLevelLookbackBars, 10, 500)),
+    maxKeyLevels: Math.round(clamp(cfg.maxKeyLevels, 1, 50)),
+    fvgImpulseBodyRatio: clamp(cfg.fvgImpulseBodyRatio, 0.5, 10),
     stopBufferAtr: clamp(cfg.stopBufferAtr, 0, 3),
     exitChochBars: Math.round(clamp(cfg.exitChochBars, 1, 20)),
     pinbarLongWickRatio: clamp(cfg.pinbarLongWickRatio, 0.4, 0.95),
     pinbarOppositeWickRatio: clamp(cfg.pinbarOppositeWickRatio, 0, 0.4),
     pinbarMaxBodyRatio: clamp(cfg.pinbarMaxBodyRatio, 0.05, 0.6),
+    engulfingBodyRatio: clamp(cfg.engulfingBodyRatio, 1, 5),
     hammerWickBodyRatio: clamp(cfg.hammerWickBodyRatio, 1, 10),
+    hammerOppositeWickBodyRatio: clamp(cfg.hammerOppositeWickBodyRatio, 0, 5),
     hammerLocalLookback: Math.round(clamp(cfg.hammerLocalLookback, 2, 30)),
     hammerLowTolerancePct: clamp(cfg.hammerLowTolerancePct, 0, 5),
     morningStarFirstBodyRatio: clamp(cfg.morningStarFirstBodyRatio, 0.2, 0.9),

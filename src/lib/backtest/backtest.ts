@@ -123,8 +123,8 @@ export function runBacktest(opts: BacktestOptions): BacktestResult {
 
     // خروج با CHoCH نزولی ۴ ساعته (فقط روی کندل بسته‌شده)
     if (position && bars4h.length >= 20 && (i + 1) % 16 === 0) {
-      const structure = analyzeStructure(bars4h);
-      if (hasRecentBearishChoch(structure, 2)) {
+      const structure = analyzeStructure(bars4h, cfg.swingLookback);
+      if (hasRecentBearishChoch(structure, cfg.exitChochBars)) {
         closeTrade(position, bar.close, "choch_down", bar.time);
       }
     }
@@ -181,10 +181,10 @@ export function runBacktest(opts: BacktestOptions): BacktestResult {
     if (position && isNewHour && bars1h.length > 60) {
       const lastHour = bars1h[bars1h.length - 1];
       const atr1h = lastAtr(bars1h, cfg.atrPeriod) ?? position.atr;
-      const levels = allLevels(bars1h, atr1h);
+      const levels = allLevels(bars1h, atr1h, cfg);
       const resistance = nearestExitLevel(levels, lastHour.close);
       const nearResistance = resistance && Math.abs(resistance.price - lastHour.close) <= cfg.levelProximityAtr * atr1h;
-      if (nearResistance && detectBearishPatterns(bars1h).length) {
+      if (nearResistance && detectBearishPatterns(bars1h, cfg).length) {
         closeTrade(position, lastHour.close, "bearish_confirmation", lastHour.time);
       }
     }

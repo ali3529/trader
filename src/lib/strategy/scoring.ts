@@ -33,11 +33,11 @@ export function evaluateEntry({ symbol, candles4h, candles1h, candles15m, cfg }:
   const time = candles1h[candles1h.length - 1].time;
 
   // ۱) ساختار ۴ ساعته (حیاتی)
-  const structure = analyzeStructure(candles4h);
+  const structure = analyzeStructure(candles4h, cfg.swingLookback);
   const structureOk = isBullishStructure(structure);
 
   // سطوح کلیدی یک‌ساعته
-  const levels = allLevels(candles1h, atr1h);
+  const levels = allLevels(candles1h, atr1h, cfg);
   const support = nearestSupport(levels, entry);
   const resistance = nearestExitLevel(levels, entry);
 
@@ -46,7 +46,7 @@ export function evaluateEntry({ symbol, candles4h, candles1h, candles15m, cfg }:
   const locationOk = support !== null && distanceToLevel <= cfg.levelProximityAtr * atr1h;
 
   // ۳) تأیید ورود: الگوی کندلی روی آخرین کندل بسته‌شده ۱ ساعته (حیاتی)
-  const patterns = detectBullishPatterns(candles1h);
+  const patterns = detectBullishPatterns(candles1h, cfg);
   const pattern = patterns[0] ?? null;
   const patternOk = pattern !== null;
 
@@ -67,7 +67,7 @@ export function evaluateEntry({ symbol, candles4h, candles1h, candles15m, cfg }:
   if (structure.lastSwingLow && structure.lastSwingLow < entry) candidates.push(structure.lastSwingLow);
   if (support && support.price < entry) candidates.push(support.price);
   const structuralStop = candidates.length ? Math.min(...candidates) : entry - 2 * atr1h;
-  const stop = structuralStop - atr1h * 0.15;
+  const stop = structuralStop - atr1h * cfg.stopBufferAtr;
   const stopDist = entry - stop;
 
   // ۷) RR حداقل ۱:۱.۵ نسبت به نزدیک‌ترین مقاومت (حیاتی)

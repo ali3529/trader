@@ -572,8 +572,8 @@ export class BotEngine {
     const fresh = candles15m.filter((c) => c.time > since);
     this.lastProcessed15m[symbol] = candles15m[candles15m.length - 1].time;
 
-    const structure4h = analyzeStructure(candles4h);
-    const chochDown = hasRecentBearishChoch(structure4h, 4);
+    const structure4h = analyzeStructure(candles4h, this.cfg.swingLookback);
+    const chochDown = hasRecentBearishChoch(structure4h, this.cfg.exitChochBars);
 
     for (const candle of fresh) {
       const current = this.positions.find((p) => p.id === position.id);
@@ -625,10 +625,10 @@ export class BotEngine {
     // خروج با تأیید نزولی روی مقاومت/Order Block/FVG
     const lastPrice = candles1h[candles1h.length - 1].close;
     const atr1h = lastAtr(candles1h, this.cfg.atrPeriod) ?? still.atr;
-    const levels = allLevels(candles1h, atr1h);
+    const levels = allLevels(candles1h, atr1h, this.cfg);
     const resistance = nearestExitLevel(levels, lastPrice);
     const nearResistance = resistance && Math.abs(resistance.price - lastPrice) <= this.cfg.levelProximityAtr * atr1h;
-    const bearish = detectBearishPatterns(candles1h);
+    const bearish = detectBearishPatterns(candles1h, this.cfg);
     if (nearResistance && bearish.length) {
       const closed = await this.finalizeClose(still, lastPrice, "bearish_confirmation", Date.now());
       if (!closed) return;
