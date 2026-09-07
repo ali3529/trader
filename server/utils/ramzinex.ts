@@ -225,7 +225,13 @@ const norm = (s: string): string => s.toUpperCase().replace(/[^A-Z0-9]/g, "");
 
 async function loadPairs(): Promise<PairsCache> {
   if (pairsCache && Date.now() - pairsCache.at < 10 * 60_000) return pairsCache;
-  const pairs = await publicGet<Array<Record<string, unknown>>>("/pairs", {}, PRIVATE_V2_BASE);
+  // پاسخ واقعی: { status:0, data:{ pairs:[...] } } — گاهی هم مستقیم آرایه
+  const payload = await publicGet<{ pairs?: Array<Record<string, unknown>> } | Array<Record<string, unknown>>>(
+    "/pairs",
+    {},
+    PRIVATE_V2_BASE,
+  );
+  const pairs = Array.isArray(payload) ? payload : payload?.pairs ?? [];
   const byNorm = new Map<string, MarketInfo>();
   const byId = new Map<number, string>();
   for (const item of pairs ?? []) {
@@ -386,8 +392,9 @@ function normalizeOrder(item: Record<string, unknown>): RzOrder {
 
 /** سفارش‌های باز: POST /users/me/orders3 با states=1 */
 export async function fetchOpenOrders(): Promise<Array<Record<string, unknown>>> {
+  // طبق پاسخ واقعی سرور: states باید آرایه باشد
   const rows = await privateRequest<Array<Record<string, unknown>>>("POST", "/users/me/orders3", {
-    body: { offset: 0, limit: 50, states: 1 },
+    body: { offset: 0, limit: 50, states: [1] },
   });
   return (rows ?? []).map((item) => ({ ...normalizeOrder(item as Record<string, unknown>) }));
 }
