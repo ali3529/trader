@@ -7,7 +7,8 @@ import { nitro } from "nitro/vite";
 
 export default defineConfig(() => ({
   server: {
-    host: "::",
+    // Private trading routes must not be exposed to the LAN by default.
+    host: "127.0.0.1",
     port: 8080,
   },
   plugins: [dyadComponentTagger(), react(), nitro()],

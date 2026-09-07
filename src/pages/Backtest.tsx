@@ -11,7 +11,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { StatCard } from "@/components/StatCard";
 import { EquityChart } from "@/components/EquityChart";
 import { useEngine, useEngineState } from "@/context/BotContext";
-import { fetchCandles } from "@/lib/engine/api";
+import { fetchCandles, getExchangeProvider } from "@/lib/engine/api";
 import { runBacktest } from "@/lib/backtest/backtest";
 import { EXIT_REASON_LABELS } from "@/lib/engine/engine";
 import type { BacktestResult, Candle } from "@/lib/types";
@@ -39,7 +39,7 @@ export default function Backtest() {
     setError(null);
     setResult(null);
     setProgress(0);
-    setStatus("در حال دریافت کندل‌های ۱۵ دقیقه از نوبیتکس…");
+    setStatus(`در حال دریافت کندل‌های ۱۵ دقیقه از ${getExchangeProvider() === "ramzinex" ? "رمزینکس" : "نوبیتکس"}…`);
     try {
       const to = Date.now();
       const start = to - days * 86_400_000;

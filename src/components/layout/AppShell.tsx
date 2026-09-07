@@ -11,13 +11,16 @@ import {
   Settings,
   Square,
   Wallet,
+  Wifi,
+  WifiOff,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { Badge } from "@/components/ui/badge";
 import { Logo } from "@/components/brand/Logo";
 import { useEngine, useEngineState } from "@/context/BotContext";
-import { useDataSource } from "@/hooks/useDataSource";
+import { useDataSource, useExchangeProvider } from "@/hooks/useDataSource";
+import { useUplink } from "@/hooks/useUplink";
 import { cn } from "@/lib/utils";
 import { formatTime } from "@/lib/format";
 
@@ -31,10 +34,36 @@ const NAV = [
   { to: "/settings", label: "تنظیمات", icon: Settings },
 ];
 
+/** نشان قطع اتصال حساب (موجودی/سفارش‌ها) با شمارش معکوس تا تلاش مجدد */
+function UplinkBadge() {
+  const uplink = useUplink();
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (uplink.status !== "down") return;
+    const id = setInterval(() => setTick((t) => t + 1), 1000);
+    return () => clearInterval(id);
+  }, [uplink.status]);
+  if (uplink.status !== "down") return null;
+  const secs = Math.max(0, Math.ceil((uplink.downUntil - Date.now()) / 1000));
+  return (
+    <Badge
+      className="rounded-full bg-loss/15 px-3 py-1 text-xs text-loss"
+      title={uplink.message ?? undefined}
+    >
+      <Wallet className="ml-1 h-3.5 w-3.5" />
+      {secs > 0
+        ? `اتصال حساب قطع است — تلاش مجدد تا ${secs.toLocaleString("fa-IR")} ثانیه`
+        : "اتصال حساب قطع است — در حال تلاش مجدد…"}
+    </Badge>
+  );
+}
+
 function StatusStrip() {
   const engine = useEngine();
   const stats = useEngineState((e) => e.stats());
+  const ws = useEngineState((e) => ({ ...e.websocket }));
   const dataSource = useDataSource();
+  const provider = useExchangeProvider();
 
   return (
     <div className="flex flex-wrap items-center gap-2">
@@ -47,17 +76,36 @@ function StatusStrip() {
       >
         {stats.mode === "real" ? "معامله واقعی" : "Paper Trading"}
       </Badge>
+      <Badge className="rounded-full bg-sky-500/15 px-3 py-1 text-xs text-sky-400">
+        صرافی: {provider === "ramzinex" ? "رمزینکس" : "نوبیتکس"}
+      </Badge>
       {dataSource === "demo" ? (
         <Badge
           className="rounded-full bg-warn/15 px-3 py-1 text-xs text-warn"
-          title="سرور پیش‌نمایش به api.nobitex.ir دسترسی ندارد؛ دادهٔ نمایش‌داده‌شده شبیه‌سازی‌شده است. روی سیستم خودتان (شبکه ایران) داده واقعی جایگزین می‌شود."
+          title="اتصال سرور به صرافی فعال برقرار نشد؛ دادهٔ نمایش‌داده‌شده شبیه‌سازی‌شده است."
         >
-          داده شبیه‌سازی‌شده — نوبیتکس در دسترس نیست
+          داده شبیه‌سازی‌شده — صرافی در دسترس نیست
         </Badge>
       ) : null}
+      <UplinkBadge />
       <Badge variant="outline" className="rounded-full border-border/70 px-3 py-1 text-xs text-muted-foreground">
         <span className={cn("ml-1.5 inline-block h-2 w-2 rounded-full", stats.running ? "animate-pulse bg-profit" : "bg-muted-foreground/50")} />
         {stats.running ? "در حال پایش بازار" : "متوقف"}
+      </Badge>
+      <Badge
+        variant="outline"
+        className={cn(
+          "rounded-full px-3 py-1 text-xs",
+          ws.status === "connected" ? "border-profit/50 text-profit" : ws.status === "error" ? "border-loss/60 text-loss" : "border-warn/50 text-warn"
+        )}
+        title={ws.error ?? (ws.lastMessageAt ? `آخرین پیام: ${new Date(ws.lastMessageAt).toLocaleTimeString("fa-IR")}` : undefined)}
+      >
+        {ws.status === "connected" ? <Wifi className="ml-1 h-3.5 w-3.5" /> : <WifiOff className="ml-1 h-3.5 w-3.5" />}
+        {ws.status === "connected"
+          ? ws.privateEnabled ? "WebSocket خصوصی" : "WebSocket عمومی"
+          : ws.status === "connecting" ? "اتصال WebSocket…"
+            : ws.status === "reconnecting" ? "اتصال مجدد WebSocket…"
+              : ws.status === "error" ? "خطای WebSocket" : "WebSocket خاموش"}
       </Badge>
       {stats.nextTick ? (
         <span className="hidden text-xs text-muted-foreground md:inline">

@@ -18,11 +18,31 @@ import { StatCard } from "@/components/StatCard";
 import { EquityChart } from "@/components/EquityChart";
 import { CandleChart } from "@/components/CandleChart";
 import { useEngine, useEngineState } from "@/context/BotContext";
-import { fetchCandles } from "@/lib/engine/api";
+import { fetchCandles, getExchangeProvider } from "@/lib/engine/api";
 import { allLevels } from "@/lib/strategy/levels";
 import { lastAtr } from "@/lib/strategy/indicators";
 import type { Candle } from "@/lib/types";
 import { formatDuration, formatPct, formatPrice, formatToman, symbolLabel } from "@/lib/format";
+
+/** کندل جاری (بسته‌نشده) را با قیمت زندهٔ وب‌سوکت به‌روز می‌کند یا می‌سازد */
+function withLiveCandle(prev: Candle[], price: number, resolutionMs: number): Candle[] {
+  if (!prev.length || !Number.isFinite(price) || price <= 0) return prev;
+  const bucket = Math.floor(Date.now() / resolutionMs) * resolutionMs;
+  const last = prev[prev.length - 1];
+  if (last.time === bucket) {
+    const updated: Candle = {
+      ...last,
+      close: price,
+      high: Math.max(last.high, price),
+      low: Math.min(last.low, price),
+    };
+    return [...prev.slice(0, -1), updated];
+  }
+  if (last.time < bucket) {
+    return [...prev, { time: bucket, open: price, high: price, low: price, close: price, volume: 0 }];
+  }
+  return prev;
+}
 
 export default function Dashboard() {
   const engine = useEngine();
@@ -32,10 +52,18 @@ export default function Dashboard() {
   const scans = useEngineState((e) => ({ ...e.scans }));
   const symbols = useEngineState((e) => e.symbols.slice());
   const trades = useEngineState((e) => e.trades.slice(-30));
+  const account = useEngineState((e) => e.account ? {
+    assetCount: Object.keys(e.account.totalBalances ?? e.account.balances).length,
+    openOrderCount: e.account.openOrders.length,
+    equityToman: e.nobitexEquityToman(),
+  } : null);
+  const exchangeName = getExchangeProvider() === "ramzinex" ? "رمزینکس" : "نوبیتکس";
 
   const [chartSymbol, setChartSymbol] = useState(symbols[0] ?? "BTCIRT");
   const [candles, setCandles] = useState<Candle[]>([]);
+  const [candlesSymbol, setCandlesSymbol] = useState("");
   const [chartLoading, setChartLoading] = useState(false);
+  const livePrice = useEngineState((e) => e.scans[chartSymbol]?.lastPrice ?? 0);
 
   useEffect(() => {
     if (!symbols.includes(chartSymbol) && symbols.length) setChartSymbol(symbols[0]);
@@ -47,7 +75,10 @@ export default function Dashboard() {
     const to = Date.now();
     fetchCandles(chartSymbol, "3600", to - 200 * 3_600_000, to)
       .then((c) => {
-        if (alive) setCandles(c.filter((x) => x.time <= to - 3_600_000));
+        if (alive) {
+          setCandles(c.filter((x) => x.time <= to - 3_600_000));
+          setCandlesSymbol(chartSymbol);
+        }
       })
       .catch(() => {
         if (alive) setCandles([]);
@@ -60,6 +91,12 @@ export default function Dashboard() {
     };
   }, [chartSymbol, stats.lastTick]);
 
+  // کندل در حال تشکیل از قیمت زندهٔ وب‌سوکت — بین دو بررسی REST چارت زنده می‌ماند
+  useEffect(() => {
+    if (candlesSymbol !== chartSymbol) return;
+    setCandles((prev) => withLiveCandle(prev, livePrice, 3_600_000));
+  }, [livePrice, chartSymbol, candlesSymbol]);
+
   const chartLevels = useMemo(() => {
     if (candles.length < 60) return [];
     const a = lastAtr(candles, 14);
@@ -70,6 +107,7 @@ export default function Dashboard() {
   const symbolTrades = trades.filter((t) => t.symbol === chartSymbol);
   const qualified = Object.values(scans).filter((s) => s.signal?.qualified);
   const pnlTone = stats.totalPnl >= 0 ? "profit" : "loss";
+  const displayedCapital = account?.equityToman ?? engine.currentEquity();
 
   return (
     <div className="space-y-4">
@@ -79,8 +117,11 @@ export default function Dashboard() {
         <CardContent className="relative space-y-3 p-5">
           <div className="flex flex-wrap items-end justify-between gap-3">
             <div>
-              <p className="text-xs text-muted-foreground">سرمایه جاری ({stats.mode === "real" ? "واقعی" : "پولی"})</p>
-              <p className="num text-2xl font-extrabold text-foreground md:text-3xl">{formatToman(engine.currentEquity())}</p>
+              <p className="text-xs text-muted-foreground">{account ? `موجودی کل حساب ${exchangeName}` : `سرمایه جاری (${stats.mode === "real" ? "واقعی" : "پولی"})`}</p>
+              <p className="num text-2xl font-extrabold text-foreground md:text-3xl">{formatToman(displayedCapital)}</p>
+              {account && stats.mode === "paper" ? (
+                <p className="mt-1 text-[11px] text-muted-foreground">سرمایه Paper Trading: <span className="num">{formatToman(engine.currentEquity())}</span></p>
+              ) : null}
             </div>
             <div className="text-left">
               <p className={stats.totalPnl >= 0 ? "num text-sm font-bold text-profit" : "num text-sm font-bold text-loss"}>
@@ -93,6 +134,7 @@ export default function Dashboard() {
             <Badge variant="outline" className="rounded-full border-border/70">آخرین بررسی: {stats.lastTick ? new Date(stats.lastTick).toLocaleTimeString("fa-IR") : "—"}</Badge>
             <Badge variant="outline" className="rounded-full border-border/70">سرمایه درگیر: {formatPct(stats.engagedCapitalPct, false)}</Badge>
             <Badge variant="outline" className="rounded-full border-border/70">Drawdown: {formatPct(stats.drawdownPct, false)}</Badge>
+            {account ? <Badge variant="outline" className="rounded-full border-profit/40 text-profit">صرافی: {account.assetCount.toLocaleString("fa-IR")} دارایی · {account.openOrderCount.toLocaleString("fa-IR")} سفارش باز</Badge> : null}
           </div>
         </CardContent>
       </Card>
@@ -146,7 +188,7 @@ export default function Dashboard() {
           <CardContent>
             {chartLoading && !candles.length ? (
               <div className="flex h-[460px] items-center justify-center text-xs text-muted-foreground">
-                در حال دریافت داده از نوبیتکس… (به دلیل رعایت فاصله ۱۲ ثانیه‌ای ممکن است کمی طول بکشد)
+                در حال دریافت داده از {exchangeName}… (به دلیل رعایت فاصله ۱۲ ثانیه‌ای ممکن است کمی طول بکشد)
               </div>
             ) : candles.length ? (
               <CandleChart

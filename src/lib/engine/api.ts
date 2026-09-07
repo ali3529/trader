@@ -130,28 +130,207 @@ function trackSource(source?: "live" | "demo"): void {
   setDataSource(source === "demo" ? "demo" : "live");
 }
 
-/** دریافت کندل‌ها از پروکسی سرور (کلیدها هرگز در فرانت‌اند نیستند) */
+/** صرافی فعال — مسیرهای سرور منبع واقعی را انتخاب می‌کنند؛ اینجا فقط برای خاموش‌کردن مسیر مستقیم نوبیتکس */
+export type ExchangeProvider = "nobitex" | "ramzinex";
+
+let exchangeProvider: ExchangeProvider = "nobitex";
+const epListeners = new Set<(p: ExchangeProvider) => void>();
+
+export function getExchangeProvider(): ExchangeProvider {
+  return exchangeProvider;
+}
+
+export function onExchangeProvider(fn: (p: ExchangeProvider) => void): () => void {
+  epListeners.add(fn);
+  return () => epListeners.delete(fn);
+}
+
+export function setExchangeProvider(p: ExchangeProvider): void {
+  if (p === exchangeProvider) return;
+  exchangeProvider = p;
+  directRestWorks = null;
+  epListeners.forEach((fn) => fn(p));
+}
+
+export async function refreshExchangeProvider(): Promise<ExchangeProvider> {
+  try {
+    const res = await fetch("/api/exchange", { cache: "no-store" });
+    if (res.ok) {
+      const data = (await res.json()) as { provider?: string };
+      setExchangeProvider(data.provider === "ramzinex" ? "ramzinex" : "nobitex");
+    }
+  } catch {
+    // در نبود سرور، پیش‌فرض نوبیتکس می‌ماند
+  }
+  return exchangeProvider;
+}
+
+/** وضعیت اتصال خصوصی (موجودی/سفارش‌ها) به نوبیتکس — مستقل از منبع دادهٔ بازار */
+export interface UplinkState {
+  status: "unknown" | "up" | "down";
+  downUntil: number;
+  message: string | null;
+}
+
+let uplink: UplinkState = { status: "unknown", downUntil: 0, message: null };
+const uplinkListeners = new Set<(u: UplinkState) => void>();
+
+export function getUplink(): UplinkState {
+  return uplink;
+}
+
+export function onUplink(fn: (u: UplinkState) => void): () => void {
+  uplinkListeners.add(fn);
+  return () => uplinkListeners.delete(fn);
+}
+
+function setUplink(next: UplinkState): void {
+  if (next.status === uplink.status && next.downUntil === uplink.downUntil && next.message === uplink.message) return;
+  uplink = next;
+  uplinkListeners.forEach((fn) => fn(uplink));
+}
+
+export function markUplinkDown(retryMs: number, message: string | null): void {
+  setUplink({ status: "down", downUntil: Date.now() + retryMs, message });
+}
+
+export function markUplinkUp(): void {
+  if (uplink.status !== "up") setUplink({ status: "up", downUntil: 0, message: null });
+}
+
+interface RawCandleArrays {
+  time?: number[];
+  open?: number[];
+  high?: number[];
+  low?: number[];
+  close?: number[];
+  volume?: number[];
+}
+
+const toCandles = (d: RawCandleArrays, timeInMs: boolean): Candle[] => {
+  const out: Candle[] = (d.time ?? []).map((t, i) => ({
+    time: timeInMs ? t : t * 1000,
+    open: d.open?.[i] ?? 0,
+    high: d.high?.[i] ?? 0,
+    low: d.low?.[i] ?? 0,
+    close: d.close?.[i] ?? 0,
+    volume: d.volume?.[i] ?? 0,
+  }));
+  return out.sort((a, b) => a.time - b.time);
+};
+
+/**
+ * تلاش مستقیم مرورگر → API عمومی نوبیتکس (بدون کلید؛ فقط endpointهای عمومی).
+ * چرا؟ سرور پیش‌نمایش به دامنهٔ نوبیتکس دسترسی ندارد ولی مرورگر کاربر ممکن است داشته باشد؛
+ * پس تاریخچهٔ واقعی هم‌منبع با وب‌سوکت می‌شود. اگر CORS/شبکه اجازه نداد، فقط یک‌بار
+ * لاگ می‌شود و بقیهٔ جلسه از پروکسی سرور استفاده می‌شود. کلیدها هرگز در فرانت‌اند نیستند.
+ */
+const DIRECT_BASES = ["https://apiv2.nobitex.ir", "https://api.nobitex.ir"];
+let directBaseIndex: number | null = null;
+let directRestWorks: boolean | null = null;
+
+/**
+ * api.nobitex.ir از DNS حذف شده (ERR_NAME_NOT_RESOLVED)؛ پس اول apiv2 تلاش می‌شود.
+ * پایهٔ موفق برای بقیهٔ جلسه به خاطر سپرده می‌شود.
+ */
+async function tryDirectJson<T>(buildUrl: (base: string) => string): Promise<T | null> {
+  if (directRestWorks === false) return null;
+  const order =
+    directBaseIndex === null ? [0, 1] : [directBaseIndex, 1 - directBaseIndex];
+  for (const index of order) {
+    try {
+      const res = await fetch(buildUrl(DIRECT_BASES[index]), {
+        headers: { Accept: "application/json" },
+        cache: "no-store",
+      });
+      if (!res.ok) continue;
+      directBaseIndex = index;
+      directRestWorks = true;
+      return (await res.json()) as T;
+    } catch {
+      // خطای DNS/CORS روی این پایه — پایهٔ بعدی تلاش می‌شود
+    }
+  }
+  directRestWorks = false;
+  console.info(
+    "[nobitex-rest] direct browser→Nobitex blocked (CORS or network) — falling back to server proxy."
+  );
+  return null;
+}
+
+interface UdfHistory {
+  s?: string;
+  t?: number[];
+  o?: number[];
+  h?: number[];
+  l?: number[];
+  c?: number[];
+  v?: number[];
+}
+
+/** رزولوشن UDF برحسب دقیقه است؛ فراخوان ممکن است ثانیه (3600) یا دقیقه (60) بفرستد. */
+function udfResolution(resolution: string): string {
+  const value = Number(resolution);
+  const minutes = value >= 60 ? value / 60 : value;
+  const allowed = [15, 60, 240];
+  const nearest = allowed.reduce((best, m) =>
+    Math.abs(m - minutes) < Math.abs(best - minutes) ? m : best
+  );
+  return String(nearest);
+}
+
+const toNums = (rows: (string | number)[][] | undefined) =>
+  (rows ?? []).map((r) => [Number(r[0]), Number(r[1])]);
+
+/** دریافت کندل‌ها: اول مستقیم از نوبیتکس (مرورگر)، در نبود آن پروکسی سرور */
 export async function fetchCandles(
   symbol: string,
   resolution: string,
   from: number,
   to: number
 ): Promise<Candle[]> {
+  // در حالت رمزینکس مسیر مستقیم نوبیتکس معنا ندارد — فقط پروکسی سرور
+  const direct =
+    exchangeProvider === "ramzinex"
+      ? null
+      : await enqueue(() =>
+          tryDirectJson<UdfHistory | RawCandleArrays[] | RawCandleArrays>((base) =>
+            `${base}/market/udf/history?symbol=${encodeURIComponent(symbol)}&resolution=${udfResolution(resolution)}&from=${Math.floor(from / 1000)}&to=${Math.floor(to / 1000)}`
+          )
+        );
+  if (direct) {
+    trackSource("live");
+    let d: RawCandleArrays;
+    if (Array.isArray(direct)) {
+      d = direct[0] ?? {};
+    } else {
+      const udf = direct as UdfHistory;
+      d = udf.t
+        ? { time: udf.t, open: udf.o, high: udf.h, low: udf.l, close: udf.c, volume: udf.v }
+        : (direct as RawCandleArrays);
+    }
+    return toCandles(d, false);
+  }
   const qs = new URLSearchParams({ symbol, resolution, from: String(from), to: String(to) });
   const data = await apiGet<NobitexCandleResponse>(`/api/market/candles?${qs}`);
   trackSource(data.source);
-  const out: Candle[] = (data.time ?? []).map((t, i) => ({
-    time: t,
-    open: data.open[i],
-    high: data.high[i],
-    low: data.low[i],
-    close: data.close[i],
-    volume: data.volume[i],
-  }));
-  return out.sort((a, b) => a.time - b.time);
+  return toCandles(data, true);
 }
 
+/** دفتر سفارش‌ها: اول مستقیم (v3)، در نبود آن پروکسی سرور */
 export async function fetchOrderBook(symbol: string): Promise<{ asks: number[][]; bids: number[][] }> {
+  const direct =
+    exchangeProvider === "ramzinex"
+      ? null
+      : await enqueue(() =>
+          tryDirectJson<{ asks?: (string | number)[][]; bids?: (string | number)[][] }>(
+            (base) => `${base}/v3/orderbook/${encodeURIComponent(symbol)}`
+          )
+        );
+  if (direct) {
+    trackSource("live");
+    return { asks: toNums(direct.asks), bids: toNums(direct.bids) };
+  }
   const data = await apiGet<{ asks: number[][]; bids: number[][]; source?: "live" | "demo" }>(
     `/api/market/orderbook?symbol=${encodeURIComponent(symbol)}`
   );

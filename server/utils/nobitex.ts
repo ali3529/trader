@@ -1,8 +1,6 @@
-import { createCipheriv, createDecipheriv, createHmac, randomBytes, createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync } from "node:fs";
-import { join } from "node:path";
-import { lookup as dnsLookup } from "node:dns";
-import { Agent, fetch as undiciFetch } from "undici";
+import { createPrivateKey, sign } from "node:crypto";
+import { createError } from "nitro/h3";
+import { deleteState, readState, writeState } from "./stateStore";
 
 /**
  * لایه امن نوبیتکس — فقط سمت سرور.
@@ -17,71 +15,45 @@ export interface StoredKeys {
   realEnabled: boolean;
 }
 
-const BASE_URL = "https://api.nobitex.ir";
-// طبق مستندات رسمی، محیط سندباکس دامنه اختصاصی و هدر X-Sandbox دارد
-const SANDBOX_URL = "https://api.sandbox.nobitex.ir";
-const DATA_DIR = join(process.cwd(), ".tradeban");
-const KEYS_FILE = join(DATA_DIR, "keys.enc.json");
-const MASTER_FILE = join(DATA_DIR, "master.key");
+// api.nobitex.ir was retired from DNS. The current public and API-key
+// endpoints are served from apiv2.nobitex.ir.
+const BASE_URL = "https://apiv2.nobitex.ir";
+const SANDBOX_URL = "https://testnetapi.nobitex.ir";
+const KEYS_DOC = "keys.enc.json";
 
 const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 30_000;
+const MIN_UPSTREAM_INTERVAL_MS = Math.max(
+  12_000,
+  Number(process.env.TRADEBAN_NOBITEX_INTERVAL_MS) || 12_000,
+);
 
-function ensureDir(): void {
-  if (!existsSync(DATA_DIR)) {
-    mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
+let upstreamQueue: Promise<unknown> = Promise.resolve();
+let lastUpstreamRequestAt = 0;
+
+export class NobitexRequestError extends Error {
+  statusCode: number;
+  retryable: boolean;
+
+  constructor(message: string, statusCode: number, retryable = false) {
+    super(message);
+    this.name = "NobitexRequestError";
+    this.statusCode = statusCode;
+    this.retryable = retryable;
   }
 }
 
-/** کلید رمزنگاری: از TRADEBAN_SECRET یا یک کلید تصادفی محلی (فایل با مجوز 600) */
-function masterSecret(): string {
-  const envSecret = process.env.TRADEBAN_SECRET;
-  if (envSecret) return envSecret;
-  ensureDir();
-  if (!existsSync(MASTER_FILE)) {
-    writeFileSync(MASTER_FILE, randomBytes(32).toString("hex"), { mode: 0o600 });
-    chmodSync(MASTER_FILE, 0o600);
-  }
-  return readFileSync(MASTER_FILE, "utf8");
+/** کلیدهای API نوبیتکس — رمزنگاری‌شده در لایهٔ ذخیرهٔ متحد (fs محلی، KV روی Vercel). */
+export async function loadKeys(): Promise<StoredKeys | null> {
+  return readState<StoredKeys | null>(KEYS_DOC, null);
 }
 
-function deriveKey(): Buffer {
-  return createHash("sha256").update(masterSecret()).digest();
+export async function saveKeys(keys: StoredKeys): Promise<void> {
+  await writeState(KEYS_DOC, keys);
 }
 
-function encryptJson(data: unknown): string {
-  const iv = randomBytes(12);
-  const cipher = createCipheriv("aes-256-gcm", deriveKey(), iv);
-  const enc = Buffer.concat([cipher.update(JSON.stringify(data), "utf8"), cipher.final()]);
-  const tag = cipher.getAuthTag();
-  return JSON.stringify({ iv: iv.toString("hex"), tag: tag.toString("hex"), data: enc.toString("hex") });
-}
-
-function decryptJson<T>(payload: string): T {
-  const { iv, tag, data } = JSON.parse(payload) as { iv: string; tag: string; data: string };
-  const decipher = createDecipheriv("aes-256-gcm", deriveKey(), Buffer.from(iv, "hex"));
-  decipher.setAuthTag(Buffer.from(tag, "hex"));
-  const dec = Buffer.concat([decipher.update(Buffer.from(data, "hex")), decipher.final()]);
-  return JSON.parse(dec.toString("utf8")) as T;
-}
-
-export function loadKeys(): StoredKeys | null {
-  try {
-    if (!existsSync(KEYS_FILE)) return null;
-    return decryptJson<StoredKeys>(readFileSync(KEYS_FILE, "utf8"));
-  } catch {
-    return null;
-  }
-}
-
-export function saveKeys(keys: StoredKeys): void {
-  ensureDir();
-  writeFileSync(KEYS_FILE, encryptJson(keys), { mode: 0o600 });
-  chmodSync(KEYS_FILE, 0o600);
-}
-
-export function deleteKeys(): void {
-  if (existsSync(KEYS_FILE)) writeFileSync(KEYS_FILE, "");
+export async function deleteKeys(): Promise<void> {
+  await deleteState(KEYS_DOC);
 }
 
 export function baseUrl(sandbox: boolean): string {
@@ -90,97 +62,73 @@ export function baseUrl(sandbox: boolean): string {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** A single server-wide queue prevents private routes from bypassing the 12s spacing. */
+function throttledFetch(input: string, init: RequestInit): Promise<Response> {
+  const run = upstreamQueue.then(async () => {
+    const wait = Math.max(0, lastUpstreamRequestAt + MIN_UPSTREAM_INTERVAL_MS - Date.now());
+    if (wait > 0) await sleep(wait);
+    lastUpstreamRequestAt = Date.now();
+    return fetch(input, init);
+  });
+  upstreamQueue = run.catch(() => undefined);
+  return run;
+}
+
+let upstreamDownUntil = 0;
+const CIRCUIT_OPEN_MS = 60_000;
+
+/** آیا بالادست در دسترس است؟ پس از خطای شبکه، تا ۶۰ ثانیه درخواست‌ها سریع شکست می‌خورند. */
+export function upstreamHealthy(): boolean {
+  return Date.now() >= upstreamDownUntil;
+}
+
+/**
+ * Circuit breaker: وقتی نوبیتکس غیرقابل دسترس است (DNS/timeout)، صف سراسری نباید
+ * هر درخواست را ۱۲ ثانیه نگه دارد؛ اولین شکست شبکه مدار را ۶۰ ثانیه باز می‌کند.
+ */
+let probeInFlight: Promise<Response> | null = null;
+let lastProbeAt = 0;
+const PROBE_INTERVAL_MS = 20_000;
+
+async function guardedFetch(input: string, init: RequestInit): Promise<Response> {
+  if (!upstreamHealthy()) {
+    // مدار نیمه‌باز: فقط GETها هر ۲۰ ثانیه یک پروب واقعی می‌فرستند تا بازیابی
+    // اتصال زودتر از پایان پنجرهٔ ۶۰ ثانیه‌ای کشف شود؛ بقیهٔ درخواست‌ها سریع شکست می‌خورند.
+    const probeAllowed = (init.method ?? "GET") === "GET";
+    if (probeAllowed && !probeInFlight && Date.now() - lastProbeAt >= PROBE_INTERVAL_MS) {
+      lastProbeAt = Date.now();
+      probeInFlight = throttledFetch(input, init)
+        .then((res) => {
+          upstreamDownUntil = 0;
+          return res;
+        })
+        .catch((err) => {
+          upstreamDownUntil = Date.now() + CIRCUIT_OPEN_MS;
+          throw err;
+        })
+        .finally(() => {
+          probeInFlight = null;
+        });
+      return probeInFlight;
+    }
+    throw new NobitexRequestError("Nobitex upstream unreachable (circuit breaker open)", 503, true);
+  }
+  try {
+    const res = await throttledFetch(input, init);
+    upstreamDownUntil = 0;
+    return res;
+  } catch (err) {
+    if (err instanceof NobitexRequestError) throw err;
+    upstreamDownUntil = Date.now() + CIRCUIT_OPEN_MS;
+    throw err;
+  }
+}
+
 const errDetail = (err: unknown): string => {
   const e = err as Error & { cause?: { code?: string; message?: string } };
   const cause = e?.cause?.code ?? e?.cause?.message;
   return cause ? `${e.message} [${cause}]` : e?.message ?? String(err);
 };
-
-/**
- * دور زدن بلوک DNS: برخی شبکه‌ها (مثل محیط پیش‌نمایش) دامنهٔ nobitex.ir را در DNS سیستم
- * بلاک می‌کنند (ENOTFOUND) ولی اینترنت و DoH باز است. پس دامنه‌های نوبیتکس را با
- * DNS-over-HTTPS resolve می‌کنیم و با همان IP (و SNI صحیح) متصل می‌شویم.
- */
-const dohCache = new Map<string, { ips: string[]; expires: number }>();
-
-const DOH_PROVIDERS: { name: string; url: (h: string) => string; headers?: Record<string, string> }[] = [
-  { name: "google", url: (h) => `https://dns.google/resolve?name=${encodeURIComponent(h)}&type=A` },
-  {
-    name: "cloudflare",
-    url: (h) => `https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(h)}&type=A`,
-    headers: { Accept: "application/dns-json" },
-  },
-  { name: "quad9", url: (h) => `https://dns.quad9.net:5053/dns-query?name=${encodeURIComponent(h)}&type=A` },
-];
-
-async function resolveViaDoh(host: string): Promise<string[]> {
-  const now = Date.now();
-  const hit = dohCache.get(host);
-  if (hit && hit.expires > now) return hit.ips;
-  let lastErr: Error = new Error(`DoH: no provider answered for ${host}`);
-  for (const p of DOH_PROVIDERS) {
-    try {
-      const res = await fetch(p.url(host), { headers: p.headers, signal: AbortSignal.timeout(8000) });
-      const json = (await res.json()) as {
-        Status?: number;
-        Answer?: { type: number; data: string }[];
-      };
-      const ips = (json.Answer ?? []).filter((a) => a.type === 1).map((a) => a.data);
-      console.log(`[doh:${p.name}] ${host} -> status=${json.Status} answers=${(json.Answer ?? []).length} ips=${ips.join(",") || "none"}`);
-      if (ips.length > 0) {
-        dohCache.set(host, { ips, expires: now + 300_000 });
-        return ips;
-      }
-      lastErr = new Error(`DoH(${p.name}): status=${json.Status}, no A record`);
-    } catch (err) {
-      console.log(`[doh:${p.name}] ${host} -> ${errDetail(err)}`);
-      lastErr = err as Error;
-    }
-  }
-  throw lastErr;
-}
-
-type LookupCb = (err: Error | null, address: string, family: number) => void;
-
-const nobitexAgent = new Agent({
-  connect: {
-    lookup: (hostname: string, _opts: unknown, cb: LookupCb) => {
-      if (!hostname.endsWith("nobitex.ir")) {
-        dnsLookup(hostname, {}, (err, address, family) => cb(err as Error | null, address, family));
-        return;
-      }
-      resolveViaDoh(hostname)
-        .then((ips) => cb(null, ips[0], 4))
-        .catch((err) => cb(err as Error, "", 4));
-    },
-  },
-});
-
-/** fetch با dispatcher سفارشی — فقط برای درخواست‌های نوبیتکس */
-function nFetch(url: string, init: Parameters<typeof undiciFetch>[1]): ReturnType<typeof undiciFetch> {
-  return undiciFetch(url, { ...init, dispatcher: nobitexAgent });
-}
-
-/** بررسی یک‌بارهٔ اتصال: اینترنت عمومی، DNS-over-HTTPS و خود نوبیتکس — فقط برای تشخیص */
-let probed = false;
-async function probeNetwork(): Promise<void> {
-  if (probed) return;
-  probed = true;
-  const targets = [
-    "https://example.com/",
-    "https://dns.google/resolve?name=api.nobitex.ir&type=A",
-    "https://api.nobitex.ir/market/udf/config",
-  ];
-  for (const t of targets) {
-    const s = Date.now();
-    try {
-      const r = await fetch(t, { signal: AbortSignal.timeout(8000) });
-      console.log(`[net-probe] ${t} -> HTTP ${r.status} in ${Date.now() - s}ms`);
-    } catch (e) {
-      console.log(`[net-probe] ${t} -> FAILED in ${Date.now() - s}ms | ${errDetail(e)}`);
-    }
-  }
-}
 
 /** درخواست عمومی با Rate Limit: حداکثر ۳ تلاش مجدد با ۳۰ ثانیه مکث */
 export async function publicGet(path: string, params: Record<string, string>, sandbox = false): Promise<unknown> {
@@ -190,7 +138,10 @@ export async function publicGet(path: string, params: Record<string, string>, sa
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     const started = Date.now();
     try {
-      const res = await nFetch(url, { headers: { Accept: "application/json" } });
+      const res = await guardedFetch(url, {
+        headers: { Accept: "application/json", "User-Agent": "TraderBot/Tradeban" },
+        signal: AbortSignal.timeout(12_000),
+      });
       const latency = Date.now() - started;
       const text = await res.text().catch(() => "");
       console.log(`[nobitex] GET ${url} -> HTTP ${res.status} in ${latency}ms | body: ${text.slice(0, 200)}`);
@@ -200,36 +151,35 @@ export async function publicGet(path: string, params: Record<string, string>, sa
         continue;
       }
       if (!res.ok) {
-        throw new Error(`nobitex ${res.status}: ${text.slice(0, 200)}`);
+        throw new NobitexRequestError(`nobitex ${res.status}: ${text.slice(0, 200)}`, res.status, res.status >= 500);
       }
       return JSON.parse(text);
     } catch (err) {
       console.log(`[nobitex] GET ${url} -> FAILED in ${Date.now() - started}ms | ${errDetail(err)}`);
-      await probeNetwork();
       lastErr = err;
+      if (err instanceof NobitexRequestError && err.statusCode === 503) throw toHttpError(err);
       // مکث ۳۰ ثانیه‌ای فقط برای Rate Limit (429)؛ خطاهای شبکه با مکث کوتاه تلاش مجدد می‌شوند
       if (attempt < MAX_RETRIES) await sleep(1000 * attempt);
     }
   }
-  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+  throw toHttpError(lastErr);
 }
 
 /**
- * درخواست امضاشده خصوصی نوبیتکس — طبق مستندات رسمی apidocs.nobitex.ir:
- * headers: A-Key, A-Signature, A-Nonce (و X-Sandbox برای محیط آزمایشی)
- * payload امضا = رشته کوئری (با «?» دقیقاً به همان ترتیبی که ارسال می‌شود) + بدنه JSON + nonce
- * نکته مهم مستندات: مسیر endpoint در امضا نقش ندارد و کوئری‌ها مرتب (sort) نمی‌شوند.
+ * درخواست خصوصی نوبیتکس با امضای Ed25519 طبق API Key v2:
+ * headers: Nobitex-Key, Nobitex-Signature, Nobitex-Timestamp
+ * payload = timestamp + METHOD + full_path_with_query + raw_body
  */
 export async function privateRequest(
   method: "GET" | "POST" | "DELETE",
   path: string,
-  opts: { query?: Record<string, string>; body?: unknown } = {}
+  opts: { query?: Record<string, string>; body?: unknown; retryable?: boolean } = {}
 ): Promise<unknown> {
-  const keys = loadKeys();
-  if (!keys) throw new Error("کلید API ذخیره نشده است");
+  const keys = await loadKeys();
+  if (!keys) throw createError({ statusCode: 400, statusMessage: "کلید API ذخیره نشده است" });
   // فقط خواندن (GET) بدون فعال‌سازی معامله واقعی مجاز است؛ ارسال/لغو سفارش نیاز به تأیید روشن دارد
   if (method !== "GET" && !keys.realEnabled) {
-    throw new Error("معامله واقعی فعال نشده است (نیاز به تأیید روشن کاربر)");
+    throw createError({ statusCode: 403, statusMessage: "معامله واقعی فعال نشده است (نیاز به تأیید روشن کاربر)" });
   }
 
   const qs = opts.query
@@ -240,48 +190,138 @@ export async function privateRequest(
   const queryString = qs ? `?${qs}` : "";
   const bodyStr = opts.body !== undefined ? JSON.stringify(opts.body) : "";
 
-  const url = `${baseUrl(keys.sandbox)}/api${path}${queryString}`;
+  const fullPath = `${path}${queryString}`;
+  const url = `${baseUrl(keys.sandbox)}${fullPath}`;
+  // GET is idempotent. Mutating requests are never retried unless the caller
+  // explicitly marks the operation idempotent (for example order cancellation).
+  const canRetry = method === "GET" || opts.retryable === true;
+  try {
+    decodePrivateKey(keys.apiSecret);
+  } catch (error) {
+    throw createError({ statusCode: 400, statusMessage: (error as Error).message });
+  }
   let lastErr: unknown;
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     const started = Date.now();
-    // nonce تازه برای هر تلاش — امضا طبق مستندات روی (query string + body + nonce) محاسبه می‌شود
-    const nonce = Date.now().toString();
-    const signature = createHmac("sha512", keys.apiSecret)
-      .update(queryString + bodyStr + nonce)
-      .digest("hex");
+    const timestamp = Math.floor(Date.now() / 1000).toString();
+    const signatureUrlSafe = signApiRequest(keys.apiSecret, timestamp, method, fullPath, bodyStr);
     try {
-      const res = await nFetch(url, {
+      const res = await guardedFetch(url, {
         method,
         headers: {
           "Content-Type": "application/json",
           Accept: "application/json",
-          "A-Key": keys.apiKey,
-          "A-Signature": signature,
-          "A-Nonce": nonce,
-          ...(keys.sandbox ? { "X-Sandbox": "1" } : {}),
+          "User-Agent": "TraderBot/Tradeban",
+          "Nobitex-Key": keys.apiKey,
+          "Nobitex-Signature": signatureUrlSafe,
+          "Nobitex-Timestamp": timestamp,
         },
         body: method === "GET" ? undefined : bodyStr || undefined,
+        signal: AbortSignal.timeout(12_000),
       });
       if (res.status === 429) {
         lastErr = new Error("rate limited");
-        if (attempt < MAX_RETRIES) await sleep(RETRY_DELAY_MS);
+        if (canRetry && attempt < MAX_RETRIES) await sleep(RETRY_DELAY_MS);
+        if (!canRetry) throw new NobitexRequestError("Rate Limit نوبیتکس؛ برای جلوگیری از سفارش تکراری تلاش خودکار انجام نشد", 429, false);
         continue;
       }
       const json = (await res.json().catch(() => ({}))) as Record<string, unknown>;
-      // مستندات: پاسخ موفق با status برابر "OK" (ثبت/لغو سفارش) یا بدون خطا برمی‌گردد
+      // پاسخ‌های فعلی عموماً status:"ok" دارند. برخی endpointها status ندارند.
       const status = typeof json.status === "string" ? json.status.toUpperCase() : "";
       if (!res.ok || (status && status !== "OK" && status !== "SUCCESS")) {
-        throw new Error(`nobitex: ${JSON.stringify(json).slice(0, 200)}`);
+        const detail = String(json.detail ?? json.message ?? json.code ?? JSON.stringify(json).slice(0, 200));
+        const friendly = /api key is invalid/i.test(detail)
+          ? "API Key نوبیتکس معتبر نیست؛ مقدار public `key` را وارد کنید، نه User Token یا privateKey."
+          : /signature/i.test(detail)
+            ? "امضای درخواست پذیرفته نشد؛ کلید خصوصی با کلید عمومی ثبت‌شده در نوبیتکس جفت نیست."
+            : detail;
+        throw new NobitexRequestError(friendly, res.status || 502, res.status >= 500);
       }
       return json;
     } catch (err) {
       console.log(`[nobitex] ${method} ${url} -> FAILED in ${Date.now() - started}ms | ${errDetail(err)}`);
       lastErr = err;
+      if (
+        !canRetry ||
+        (err instanceof NobitexRequestError && (!err.retryable || err.statusCode === 503))
+      ) {
+        throw toHttpError(err);
+      }
       // مکث ۳۰ ثانیه‌ای فقط برای Rate Limit (429)؛ خطاهای شبکه با مکث کوتاه تلاش مجدد می‌شوند
       if (attempt < MAX_RETRIES) await sleep(1000 * attempt);
     }
   }
-  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+  throw toHttpError(lastErr);
+}
+
+const PKCS8_ED25519_PREFIX = Buffer.from("302e020100300506032b657004220420", "hex");
+
+/**
+ * پذیرش کلید خصوصی Ed25519 در همه فرمت‌های رایج:
+ * Base64 / Base64url (seed یا seed+pub)، hex ۶۴/۱۲۸ کاراکتری، و PKCS#8 DER (با یا بدون PEM).
+ */
+export function decodePrivateKey(value: string): Buffer {
+  const cleaned = value
+    .trim()
+    .replace(/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/gi, "")
+    .replace(/-----END [A-Z0-9 ]*PRIVATE KEY-----/gi, "")
+    .replace(/\s+/g, "");
+  if (/^[0-9a-fA-F]+$/.test(cleaned) && (cleaned.length === 64 || cleaned.length === 128)) {
+    return Buffer.from(cleaned.slice(0, 64), "hex");
+  }
+  const normalized = cleaned.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
+  const decoded = Buffer.from(padded, "base64");
+  // Some exporters append the public key to the 32-byte seed.
+  if (decoded.length === 64) return decoded.subarray(0, 32);
+  if (decoded.length === 48 && decoded.subarray(0, 16).equals(PKCS8_ED25519_PREFIX)) {
+    return decoded.subarray(16);
+  }
+  if (decoded.length === 32) return decoded;
+  throw new Error(
+    `کلید خصوصی Ed25519 نوبیتکس معتبر نیست؛ فرمت‌های پذیرفته‌شده: Base64 یا Base64url یا hexِ seed سی‌ودوبایته. ورودی شما ${cleaned.length} کاراکتر است — مقدار «کلید خصوصی» ساخته‌شده در نوبیتکس را وارد کنید، نه User Token یا API Key.`
+  );
+}
+
+/** تبدیل خطاهای داخلی به خطای HTTP استاندارد تا h3 آن‌ها را unhandled (500) نبیند. */
+export function toHttpError(err: unknown): Error {
+  if (err instanceof NobitexRequestError) {
+    const statusMessage =
+      err.statusCode === 503 && /circuit breaker/i.test(err.message)
+        ? "نوبیتکس موقتاً در دسترس نیست (قطع اتصال شبکه)؛ حداکثر تا یک دقیقه دیگر دوباره تلاش می‌شود."
+        : err.message;
+    return createError({
+      statusCode: err.statusCode,
+      statusMessage,
+      data: { code: "NOBITEX_ERROR", retryable: err.retryable },
+    });
+  }
+  if (err instanceof Error && typeof (err as { statusCode?: number }).statusCode === "number") {
+    return err; // قبلاً خطای h3 است
+  }
+  return createError({
+    statusCode: 503,
+    statusMessage: `دسترسی به نوبیتکس ممکن نشد: ${errDetail(err)}`,
+    data: { code: "UPSTREAM_DOWN" },
+  });
+}
+
+export function signApiRequest(
+  privateKeyValue: string,
+  timestamp: string,
+  method: "GET" | "POST" | "DELETE",
+  fullPath: string,
+  rawBody: string,
+): string {
+  const rawPrivateKey = decodePrivateKey(privateKeyValue);
+  const privateKey = createPrivateKey({
+    key: Buffer.concat([Buffer.from("302e020100300506032b657004220420", "hex"), rawPrivateKey]),
+    format: "der",
+    type: "pkcs8",
+  });
+  const payload = `${timestamp}${method}${fullPath}${rawBody}`;
+  const signatureBase64 = sign(null, Buffer.from(payload, "utf8"), privateKey).toString("base64");
+  return signatureBase64.replace(/\+/g, "-").replace(/\//g, "_");
 }
 
 /** اعتبارسنجی نماد برای جلوگیری از تزریق ورودی */

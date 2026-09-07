@@ -14,6 +14,7 @@
 - **Paper Trading (پیش‌فرض):** شبیه‌سازی کامل با کارمزد و اسلیپیج، بدون هیچ سفارش واقعی
 - **بک‌تست رویداد‌محور:** فقط کندل‌های بسته‌شده (بدون look-ahead) با تجمیع تدریجی ۱۵دقیقه → ۱ساعت → ۴ساعت
 - **گزارش‌های روزانه و لاگ زنده API** با وضعیت، تلاش مجدد و تأخیر هر درخواست
+- **Qwen محلی (اختیاری):** بررسی مشورتی snapshot سیگنال؛ بدون دسترسی به کلیدها یا اختیار ارسال سفارش
 
 ## اجرا
 
@@ -38,13 +39,20 @@ pnpm test
 pnpm build && pnpm start
 ```
 
+در production، متغیرهای لازم را از روی `.env.example` در secret manager تنظیم کنید. فایل `.env` واقعی نباید commit شود.
+
 ## پیکربندی کلید API نوبیتکس
 
 کلیدها **فقط از طریق صفحه «تنظیمات»** وارد می‌شوند و سمت سرور با AES-256-GCM رمزنگاری‌شده در پوشه `.tradeban/` (خارج از Git) ذخیره می‌شوند. کلید مخفی هرگز به مرورگر یا لاگ‌ها برنمی‌گردد.
 
 - متغیر محیطی اختیاری `TRADEBAN_SECRET`: کلید اصلی رمزنگاری ذخیره‌ساز کلیدها. اگر تنظیم نشود، یک کلید تصادفی محلی با مجوز 600 ساخته می‌شود.
+- سرور توسعه به‌صورت پیش‌فرض فقط روی `127.0.0.1` گوش می‌دهد. برای production یا دسترسی غیرمحلی، `TRADEBAN_BASIC_AUTH='username:strong-password'` الزامی است. اجرای production فقط روی همان دستگاه را می‌توان آگاهانه با `TRADEBAN_ALLOW_LOCAL_UNAUTH=true` مجاز کرد.
 - **معامله واقعی به‌صورت پیش‌فرض خاموش است** و فقط با تأیید روشن کاربر (عبارت `ENABLE-REAL-TRADING` در تنظیمات) فعال می‌شود.
-- در پنل نوبیتکس، کلید را **بدون مجوز برداشت** و در صورت امکان با **محدودیت IP** بسازید.
+- سفارش واقعی یک بار ارسال می‌شود و POST ثبت سفارش retry خودکار ندارد. هر سفارش `clientOrderId` یکتا دارد و تا وقتی وضعیت و مقدار fill قطعی نباشد، دفتر داخلی تغییر نمی‌کند.
+- قیمت‌های UI بر حسب تومان‌اند؛ لایه سرور قبل از ارسال سفارش آن‌ها را به ریال تبدیل می‌کند.
+- سقف‌های ۱٪ ریسک، ۱۲٪ سرمایه درگیر و ۴ سفارش باز علاوه بر مرورگر، دوباره سمت سرور کنترل می‌شوند. حداقل سفارش پیش‌فرض ۳۰۰٬۰۰۰ تومان است و با `TRADEBAN_MIN_ORDER_TOMAN` قابل تنظیم است.
+- در پنل نوبیتکس، API Key جدید Ed25519 را با دسترسی `READ` و فقط در صورت نیاز `TRADE` بسازید؛ **مجوز برداشت ندهید** و در صورت امکان IP Whitelist بگذارید.
+- Private Key فقط هنگام ساخت کلید نمایش داده می‌شود؛ همان مقدار URL-safe Base64 را در تنظیمات تریدبان وارد کنید.
 - اگر کلیدی را در چت، ایمیل یا جای دیگری به اشتراک گذاشتید، فوراً در نوبیتکس آن را **حذف/بازسازی** کنید.
 
 ## معماری
@@ -59,18 +67,55 @@ pnpm build && pnpm start
 | سرور | `server/` | پروکسی نوبیتکس، ذخیره رمزنگاری‌شده کلیدها، ثبت/لغو سفارش |
 | UI | `src/pages/` و `src/components/` | فقط نمایش وضعیت از `BotContext` |
 
+دفترهای Paper و Real در مرورگر کاملاً جدا ذخیره می‌شوند. سفارش‌های ایجادشده توسط ربات نیز در لایه ذخیرهٔ متحد (`server/utils/stateStore.ts` — محلی در پوشه `.tradeban/` و روی Vercel در Upstash KV) رمزنگاری می‌شوند تا بعد از restart یا اتصال مجدد، پوزیشن‌های Real با موجودی و سفارش‌های REST بازسازی شوند. ورود به حالت Real در هر اجرای تازه دوباره نیازمند تأیید است.
+
+## Qwen محلی با Ollama
+
+Qwen برای شروع Paper Trading یا Real Trading الزامی نیست. موتور اصلی کاملاً قطعی است؛ Qwen فقط توضیح ریسک و نکات سیگنال را به درخواست کاربر ارائه می‌کند.
+
+```bash
+ollama pull qwen3:4b
+ollama serve
+NITRO_OLLAMA_MODEL=qwen3:4b pnpm dev
+```
+
+در صورت اجرای Ollama روی آدرس دیگری، `NITRO_OLLAMA_URL` را تنظیم کنید. وضعیت مدل در «تنظیمات ← Qwen محلی» دیده می‌شود و تحلیل از صفحه «فرصت‌ها» به‌صورت دستی اجرا می‌شود.
+
 ## نکات اتصال به نوبیتکس (طبق مستندات رسمی)
 
 مستندات: [apidocs.nobitex.ir — معاملات اسپات](https://apidocs.nobitex.ir/spot_trade/)
 
-- **کندل‌ها:** `GET /market/candlestore/light?symbol=BTCIRT&resolution=900&from=…&to=…` — نماد بزرگ و `from`/`to` بر حسب **ثانیه یونیکس**. پروکسی سرور میلی‌ثانیه فرانت‌اند را تبدیل می‌کند.
-- **دفتر سفارش‌ها:** `GET /market/orderbook/{SYMBOL}`
-- **ثبت سفارش:** `POST /api/orders` با بدنه `{ type: "buy"|"sell", symbol: "btcirt" (کوچک), quantity, orderType: "LIMIT"|"MARKET", price (فقط LIMIT) }` — پاسخ موفق `status: "OK"`.
-- **لغو سفارش:** `DELETE /api/orders/{order-id}` (شناسه عددی در مسیر).
-- **موجودی‌ها:** `GET /api/users/wallets/balance` و سفارش‌های باز: `GET /api/orders?status=ACTIVE`.
-- **امضا:** هدرهای `A-Key`، `A-Signature`، `A-Nonce`؛ امضا = `HMAC-SHA512(secret, queryString + body + nonce)`؛ مسیر endpoint در امضا نقش ندارد.
+- **میزبان API:** `https://apiv2.nobitex.ir`
+- **کندل‌ها:** `GET /market/udf/history?symbol=BTCIRT&resolution=60&from=…&to=…` — `from`/`to` بر حسب ثانیه یونیکس.
+- **دفتر سفارش‌ها:** `GET /v3/orderbook/{SYMBOL}`
+- **ثبت/لغو سفارش:** `POST /market/orders/add` و `POST /market/orders/update-status`
+- **موجودی‌ها/سفارش‌ها:** `GET /v2/wallets` و `GET /market/orders/list?status=open`
+- **امضا:** Ed25519 با هدرهای `Nobitex-Key`، `Nobitex-Signature`، `Nobitex-Timestamp`؛ متن امضا `timestamp + METHOD + full_path + raw_body` است.
+- **WebSocket:** اتصال Centrifugo به `wss://ws.nobitex.ir/connection/websocket`؛ کانال‌های عمومی بدون کلید و کانال‌های خصوصی با توکن ۲۰دقیقه‌ای خودکار.
 - **نرخ درخواست:** حداقل فاصله ۱۲ ثانیه بین درخواست‌ها و حداکثر ۳ تلاش مجدد با ۳۰ ثانیه مکث روی خطای ۴۲۹ (صف جهانی در موتور).
-- محیط آزمایشی: دامنه `api.sandbox.nobitex.ir`.
+- محیط آزمایشی: `https://testnetapi.nobitex.ir` و `wss://testnetws.nobitex.ir`.
+
+## دیپلوی روی Vercel
+
+لایه ذخیره state (`server/utils/stateStore.ts`) دو بک‌اند دارد:
+
+- **fs (پیش‌فرض):** پوشه `.tradeban` محلی یا `TRADEBAN_STATE_DIR` — برای اجرا روی ماشین خودتان یا VM با دیسک پایدار.
+- **kv:** اگر `KV_REST_API_URL` و `KV_REST_API_TOKEN` تنظیم باشند، همه state رمزنگاری‌شده در **Upstash Redis** ذخیره می‌شود — تنها گزینه پایدار روی Vercel (فایل‌سیستم serverless موقتی است و بدون KV، state فقط تا warm ماندن نمونه در `/tmp` دوام می‌آورد).
+
+مراحل:
+
+1. ریپو را به Vercel وصل کنید (Framework: Vite؛ `vercel.json` دستور `pnpm install --no-frozen-lockfile` و `pnpm build` را تنظیم می‌کند).
+2. از Vercel Marketplace افزونه **Upstash for Redis** را به پروژه اضافه کنید؛ متغیرهای `KV_REST_API_URL` و `KV_REST_API_TOKEN` خودکار تزریق می‌شوند.
+3. در Environment Variables پروژه این‌ها را تنظیم کنید:
+   - `TRADEBAN_SECRET` — **الزامی روی Vercel**: کلید پایدار رمزنگاری state (بدون آن، کلیدهای ذخیره‌شده پس از هر cold start رمزگشایی نمی‌شوند).
+   - `TRADEBAN_BASIC_AUTH='username:strong-password'` — **الزامی**: بدون آن همه routeهای حساس در production با 403 بسته می‌شوند. مرورگر (Chrome) با prompt بومی Basic Auth یک‌بار در هر نشست credentials را می‌گیرد.
+4. پس از دیپلوی، کلیدهای نوبیتکس/رمزینکس را از صفحه «تنظیمات» دوباره وارد کنید تا در KV ذخیره شوند.
+
+نکات:
+
+- WebSocket بازار و همه درخواست‌های UI از مرورگر مستقیماً به صرافی می‌روند؛ توابع Vercel فقط پروکسی REST و vault کلیدها هستند. cold start تابع اول کمی کندتر است.
+- دسترسی API نوبیتکس/رمزینکس از ریجن‌های Vercel را قبل از معامله واقعی با حالت Paper بررسی کنید (احتمال محدودیت جغرافیایی/تأخیر). در صورت نیاز IP Whitelist کلید را با IP خروجی Vercel تنظیم نکنید (متغیر است) — Whitelist نگذارید و فقط مجوز READ/TRADE بدهید.
+- معامله واقعی همچنان فقط با تأیید روشن `ENABLE-REAL-TRADING` فعال می‌شود و این gate سمت سرور بررسی می‌شود.
 
 ## استقرار امن
 
@@ -79,3 +124,5 @@ pnpm build && pnpm start
 3. پوشه `.tradeban/` و `.env` در `.gitignore` هستند — هرگز commit نشوند.
 4. کلید API نوبیتکس بدون مجوز برداشت و با محدودیت IP ساخته شود.
 5. ابتدا مدت کافی در حالت **Paper** ارزیابی کنید؛ فعال‌سازی معامله واقعی نیازمند تأیید روشن در تنظیمات است.
+6. برای اجرای زنده از یک سرویس Node دائمی با دیسک پایدار (بک‌اند fs) یا روی Vercel از Upstash KV استفاده کنید. بدون KV، state روی فایل‌سیستم موقت `/tmp` می‌ماند و با هر cold start پاک می‌شود.
+7. اگر state محلی `.tradeban/` دارید و می‌خواهید به Vercel مهاجرت کنید، کلیدها را پس از دیپلوی یک‌بار از صفحه «تنظیمات» دوباره ذخیره کنید تا در KV بنشینند.

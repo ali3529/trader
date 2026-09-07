@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Check, ChevronDown, RefreshCw, X } from "lucide-react";
+import { BrainCircuit, Check, ChevronDown, Loader2, RefreshCw, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -9,6 +9,8 @@ import { formatPct, formatPrice, formatToman, symbolLabel } from "@/lib/format";
 import { PATTERN_LABELS } from "@/lib/strategy/patterns";
 import { cn } from "@/lib/utils";
 import type { SymbolScan } from "@/lib/types";
+import { analyzeOpportunity } from "@/lib/ai";
+import type { QwenAnalysis } from "@/lib/ai";
 
 const STATUS_META: Record<SymbolScan["status"], { label: string; cls: string }> = {
   qualified: { label: "واجد شرایط", cls: "bg-profit/15 text-profit" },
@@ -21,6 +23,22 @@ export default function Opportunities() {
   const engine = useEngine();
   const scans = useEngineState((e) => Object.values(e.scans));
   const [open, setOpen] = useState<string | null>(null);
+  const [aiLoading, setAiLoading] = useState<string | null>(null);
+  const [aiResults, setAiResults] = useState<Record<string, QwenAnalysis>>({});
+  const [aiErrors, setAiErrors] = useState<Record<string, string>>({});
+
+  async function runQwen(scan: SymbolScan) {
+    setAiLoading(scan.symbol);
+    setAiErrors((current) => ({ ...current, [scan.symbol]: "" }));
+    try {
+      const result = await analyzeOpportunity(scan);
+      setAiResults((current) => ({ ...current, [scan.symbol]: result }));
+    } catch (error) {
+      setAiErrors((current) => ({ ...current, [scan.symbol]: (error as Error).message }));
+    } finally {
+      setAiLoading(null);
+    }
+  }
 
   const sorted = scans.slice().sort((a, b) => {
     const qa = a.signal?.qualified ? 1 : 0;
@@ -118,7 +136,35 @@ export default function Opportunities() {
                       <Badge variant="outline" className="rounded-full border-border/70 px-3 py-1 text-muted-foreground">
                         Grid: {signal.grid?.enabled ? `فعال (${signal.grid.levels.length.toLocaleString("fa-IR")} سطح)` : "غیرفعال"}
                       </Badge>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 rounded-full border-sky-500/30 px-3 text-[11px] text-sky-400"
+                        disabled={aiLoading === scan.symbol}
+                        onClick={() => void runQwen(scan)}
+                      >
+                        {aiLoading === scan.symbol ? <Loader2 className="ml-1 h-3.5 w-3.5 animate-spin" /> : <BrainCircuit className="ml-1 h-3.5 w-3.5" />}
+                        بررسی مشورتی Qwen
+                      </Button>
                     </div>
+
+                    {aiResults[scan.symbol] ? (
+                      <div className="mt-3 rounded-xl border border-sky-500/20 bg-sky-500/5 p-3 text-[11px]">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p className="font-bold text-sky-400">تحلیل مشورتی Qwen</p>
+                          <Badge variant="outline" className="rounded-full border-sky-500/30 text-sky-400">
+                            اطمینان {aiResults[scan.symbol].confidence.toLocaleString("fa-IR", { maximumFractionDigits: 0 })}٪
+                          </Badge>
+                        </div>
+                        <p className="mt-2 leading-6 text-foreground">{aiResults[scan.symbol].summary}</p>
+                        {aiResults[scan.symbol].risks.length ? (
+                          <p className="mt-2 text-warn">ریسک‌ها: {aiResults[scan.symbol].risks.join(" · ")}</p>
+                        ) : null}
+                        <p className="mt-2 text-muted-foreground">این خروجی سیگنال یا مجوز معامله نیست و هیچ سفارشی ارسال نمی‌کند.</p>
+                      </div>
+                    ) : aiErrors[scan.symbol] ? (
+                      <p className="mt-3 rounded-lg bg-loss/10 px-3 py-2 text-[11px] text-loss">تحلیل مشورتی ناموفق: {aiErrors[scan.symbol]}</p>
+                    ) : null}
 
                     <button
                       className="mt-3 flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground"

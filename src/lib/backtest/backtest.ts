@@ -3,7 +3,7 @@ import type { BacktestResult, Candle, Position, Trade, EquityPoint } from "../ty
 import { aggregateCandles, lastAtr } from "../strategy/indicators";
 import { analyzeStructure, hasRecentBearishChoch } from "../strategy/structure";
 import { detectBearishPatterns } from "../strategy/patterns";
-import { allLevels, nearestResistance } from "../strategy/levels";
+import { allLevels, nearestExitLevel } from "../strategy/levels";
 import { evaluateEntry } from "../strategy/scoring";
 import { computeMetrics, computePositionSize, managePosition } from "../risk/risk";
 
@@ -51,6 +51,10 @@ export function runBacktest(opts: BacktestOptions): BacktestResult {
     const partialPnl = p.legs.reduce((a, l) => a + l.pnl, 0);
     const finalPnl = (fill - p.entry) * p.qty - fee;
     const totalQty = p.qty + p.legs.reduce((a, l) => a + l.qty, 0);
+    const entryNotional = totalQty * p.entry;
+    const entryFee = entryNotional * feePct;
+    const exitFees = p.legs.reduce((sum, leg) => sum + (leg.fee ?? 0), 0) + fee;
+    const totalPnl = partialPnl + finalPnl - entryFee;
     const avgExit = totalQty > 0 ? (p.legs.reduce((a, l) => a + l.qty * l.price, 0) + fill * p.qty) / totalQty : fill;
     const riskPerUnit = p.entry - p.initialStop;
     trades.push({
@@ -61,15 +65,15 @@ export function runBacktest(opts: BacktestOptions): BacktestResult {
       entry: p.entry,
       exit: avgExit,
       qty: totalQty,
-      pnl: partialPnl + finalPnl - p.notional * feePct,
-      pnlPct: p.notional > 0 ? ((partialPnl + finalPnl - p.notional * feePct) / p.notional) * 100 : 0,
-      fees: fee + p.notional * feePct,
+      pnl: totalPnl,
+      pnlPct: entryNotional > 0 ? (totalPnl / entryNotional) * 100 : 0,
+      fees: entryFee + exitFees,
       rrPlanned: p.rr,
       rrActual: riskPerUnit > 0 ? (avgExit - p.entry) / riskPerUnit : 0,
       exitReason: reason,
       entryReason: `سیگنال Price Action با امتیاز ${p.signalScore}/۸`,
       mode: "paper",
-      legs: [...p.legs, { qty: p.qty, price: fill, time, reason, pnl: finalPnl }],
+      legs: [...p.legs, { qty: p.qty, price: fill, time, reason, pnl: finalPnl, fee }],
       holdMs: Math.max(0, time - p.openedAt),
     });
     position = null;
@@ -97,8 +101,21 @@ export function runBacktest(opts: BacktestOptions): BacktestResult {
         closeTrade(position, res.stopHit.price, res.stopHit.reason, bar.time);
       } else {
         if (res.partialClose) {
-          const fee = res.partialClose.qty * res.partialClose.price * feePct;
-          cash += res.partialClose.qty * res.partialClose.price - fee;
+          const partialFill = res.partialClose.price * (1 - slipPct);
+          const fee = res.partialClose.qty * partialFill * feePct;
+          cash += res.partialClose.qty * partialFill - fee;
+          if (res.position) {
+            const legs = res.position.legs.slice(0, -1);
+            legs.push({
+              qty: res.partialClose.qty,
+              price: partialFill,
+              time: bar.time,
+              reason: `خروج جزئی در RR=${cfg.partialExitRR}`,
+              pnl: (partialFill - position.entry) * res.partialClose.qty - fee,
+              fee,
+            });
+            res.position.legs = legs;
+          }
         }
         if (res.position) position = res.position;
       }
@@ -106,8 +123,8 @@ export function runBacktest(opts: BacktestOptions): BacktestResult {
 
     // خروج با CHoCH نزولی ۴ ساعته (فقط روی کندل بسته‌شده)
     if (position && bars4h.length >= 20 && (i + 1) % 16 === 0) {
-      const structure = analyzeStructure(bars4h);
-      if (hasRecentBearishChoch(structure, 2)) {
+      const structure = analyzeStructure(bars4h, cfg.swingLookback);
+      if (hasRecentBearishChoch(structure, cfg.exitChochBars)) {
         closeTrade(position, bar.close, "choch_down", bar.time);
       }
     }
@@ -164,15 +181,16 @@ export function runBacktest(opts: BacktestOptions): BacktestResult {
     if (position && isNewHour && bars1h.length > 60) {
       const lastHour = bars1h[bars1h.length - 1];
       const atr1h = lastAtr(bars1h, cfg.atrPeriod) ?? position.atr;
-      const levels = allLevels(bars1h, atr1h);
-      const resistance = nearestResistance(levels, lastHour.close * 1.02);
+      const levels = allLevels(bars1h, atr1h, cfg);
+      const resistance = nearestExitLevel(levels, lastHour.close);
       const nearResistance = resistance && Math.abs(resistance.price - lastHour.close) <= cfg.levelProximityAtr * atr1h;
-      if (nearResistance && detectBearishPatterns(bars1h).length) {
+      if (nearResistance && detectBearishPatterns(bars1h, cfg).length) {
         closeTrade(position, lastHour.close, "bearish_confirmation", lastHour.time);
       }
     }
 
-    if ((i + 1) % 96 === 0) markEquity(bar.time); // ثبت منحنی سرمایه هر روز
+    // ثبت هر کندل بسته‌شده تا Max Drawdown میان‌روزی از دست نرود.
+    markEquity(bar.time);
   }
 
   // بستن اجباری پوزیشن باز در انتهای دوره

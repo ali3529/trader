@@ -6,11 +6,11 @@ import type { StrategyConfig } from "../config";
  * شناسایی سطوح حمایت و مقاومت با کلاسترکردن نقاط چرخش نزدیک به هم.
  * قدرت سطح = تعداد برخوردها.
  */
-export function supportResistance(candles: Candle[], atrValue: number): Level[] {
+export function supportResistance(candles: Candle[], atrValue: number, cfg?: StrategyConfig): Level[] {
   if (!atrValue || atrValue <= 0) return [];
-  const swings = swingPoints(candles, 2);
+  const swings = swingPoints(candles, cfg?.swingLookback ?? 2);
   const clusters: { price: number; count: number; time: number }[] = [];
-  const tol = atrValue * 0.5;
+  const tol = atrValue * (cfg?.levelClusterAtr ?? 0.5);
 
   for (const s of swings) {
     const hit = clusters.find((c) => Math.abs(c.price - s.price) <= tol);
@@ -25,7 +25,7 @@ export function supportResistance(candles: Candle[], atrValue: number): Level[] 
 
   const last = candles[candles.length - 1];
   return clusters
-    .filter((c) => c.count >= 2)
+    .filter((c) => c.count >= (cfg?.levelMinTouches ?? 2))
     .map((c) => ({
       price: c.price,
       kind: (c.price <= last.close ? "support" : "resistance") as Level["kind"],
@@ -39,17 +39,19 @@ export function supportResistance(candles: Candle[], atrValue: number): Level[] 
  * Order Block ساده: آخرین کندل مخالف قبل از حرکت قوی در جهت روند
  * (حرکت قوی = بدنه‌ای بزرگ‌تر از ۱.۵ برابر میانگین بدنه ۲۰ دوره).
  */
-export function orderBlocks(candles: Candle[]): Level[] {
-  if (candles.length < 25) return [];
-  const bodies = candles.slice(-21, -1).map((c) => Math.abs(c.close - c.open));
+export function orderBlocks(candles: Candle[], cfg?: StrategyConfig): Level[] {
+  const bodyPeriod = cfg?.orderBlockBodyPeriod ?? 20;
+  if (candles.length < bodyPeriod + 5) return [];
+  const bodies = candles.slice(-bodyPeriod - 1, -1).map((c) => Math.abs(c.close - c.open));
   const avgBody = bodies.reduce((a, b) => a + b, 0) / bodies.length;
   if (avgBody <= 0) return [];
   const out: Level[] = [];
 
-  for (let i = candles.length - 3; i >= Math.max(1, candles.length - 40); i--) {
+  const lookback = cfg?.keyLevelLookbackBars ?? 40;
+  for (let i = candles.length - 3; i >= Math.max(1, candles.length - lookback); i--) {
     const c = candles[i];
     const next = candles[i + 1];
-    const strong = Math.abs(next.close - next.open) > avgBody * 1.5;
+    const strong = Math.abs(next.close - next.open) > avgBody * (cfg?.orderBlockImpulseMult ?? 1.5);
     if (!strong) continue;
     const bullishMove = next.close > next.open;
     const bearishCandle = c.close < c.open;
@@ -57,17 +59,18 @@ export function orderBlocks(candles: Candle[]): Level[] {
       out.push({ price: c.high, kind: "order_block", strength: 3, time: c.time });
     }
   }
-  return out.slice(0, 5);
+  return out.slice(0, cfg?.maxKeyLevels ?? 5);
 }
 
 /** FVG سه‌کندلی: شکاف بین high کندل اول و low کندل سوم در حرکت صعودی */
-export function fairValueGaps(candles: Candle[]): Level[] {
+export function fairValueGaps(candles: Candle[], cfg?: StrategyConfig): Level[] {
   const out: Level[] = [];
-  for (let i = candles.length - 3; i >= Math.max(0, candles.length - 40); i--) {
+  const lookback = cfg?.keyLevelLookbackBars ?? 40;
+  for (let i = candles.length - 3; i >= Math.max(0, candles.length - lookback); i--) {
     const a = candles[i];
     const b = candles[i + 1];
     const c = candles[i + 2];
-    const strong = b.close > b.open && Math.abs(b.close - b.open) > Math.abs(a.close - a.open);
+    const strong = b.close > b.open && Math.abs(b.close - b.open) > Math.abs(a.close - a.open) * (cfg?.fvgImpulseBodyRatio ?? 1);
     if (strong && c.low > a.high) {
       out.push({
         price: (a.high + c.low) / 2,
@@ -77,11 +80,11 @@ export function fairValueGaps(candles: Candle[]): Level[] {
       });
     }
   }
-  return out.slice(0, 5);
+  return out.slice(0, cfg?.maxKeyLevels ?? 5);
 }
 
-export function allLevels(candles: Candle[], atrValue: number): Level[] {
-  return [...supportResistance(candles, atrValue), ...orderBlocks(candles), ...fairValueGaps(candles)];
+export function allLevels(candles: Candle[], atrValue: number, cfg?: StrategyConfig): Level[] {
+  return [...supportResistance(candles, atrValue, cfg), ...orderBlocks(candles, cfg), ...fairValueGaps(candles, cfg)];
 }
 
 /** نزدیک‌ترین سطح معتبر زیر قیمت (برای Stop و محل ورود) */
@@ -102,6 +105,14 @@ export function nearestResistance(levels: Level[], price: number): Level | null 
   return above[0] ?? null;
 }
 
+/** نزدیک‌ترین مانع عرضه بالای قیمت: مقاومت، Order Block یا FVG. */
+export function nearestExitLevel(levels: Level[], price: number): Level | null {
+  const above = levels
+    .filter((level) => level.price > price)
+    .sort((a, b) => a.price - b.price || b.strength - a.strength);
+  return above[0] ?? null;
+}
+
 /**
  * Grid: تقسیم فاصله حمایت تا مقاومت اصلی ۳۰ روز اخیر به ۲۵ سطح.
  * فقط برای تقسیم سرمایه و محدودکردن سایز — هرگز سیگنال ورود نیست.
@@ -119,7 +130,7 @@ export function buildGrid(
     return { enabled: false, support: 0, resistance: 0, levels: [], rangePct: 0 };
   }
 
-  const levels = supportResistance(recent, atrValue);
+  const levels = supportResistance(recent, atrValue, cfg);
   const lastPrice = recent[recent.length - 1].close;
   const supports = levels.filter((l) => l.price < lastPrice).sort((a, b) => b.price - a.price);
   const resistances = levels.filter((l) => l.price > lastPrice).sort((a, b) => a.price - b.price);
@@ -131,9 +142,10 @@ export function buildGrid(
     return { enabled: false, support, resistance, levels: [], rangePct };
   }
 
+  const count = Math.max(2, Math.round(cfg.gridLevels));
   const gridLevels: number[] = [];
-  for (let i = 0; i <= cfg.gridLevels; i++) {
-    gridLevels.push(support + ((resistance - support) * i) / cfg.gridLevels);
+  for (let i = 0; i < count; i++) {
+    gridLevels.push(support + ((resistance - support) * i) / (count - 1));
   }
   return { enabled: true, support, resistance, levels: gridLevels, rangePct };
 }
