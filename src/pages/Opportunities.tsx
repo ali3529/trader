@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { BrainCircuit, Check, ChevronDown, Loader2, RefreshCw, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -9,7 +9,7 @@ import { formatPct, formatPrice, formatToman, symbolLabel } from "@/lib/format";
 import { PATTERN_LABELS } from "@/lib/strategy/patterns";
 import { cn } from "@/lib/utils";
 import type { SymbolScan } from "@/lib/types";
-import { analyzeOpportunity } from "@/lib/ai";
+import { analyzeOpportunity, fetchQwenStatus } from "@/lib/ai";
 import type { QwenAnalysis } from "@/lib/ai";
 
 const STATUS_META: Record<SymbolScan["status"], { label: string; cls: string }> = {
@@ -48,11 +48,51 @@ export default function Opportunities() {
   });
   const qualifiedCount = sorted.filter((s) => s.signal?.qualified).length;
 
+  // تحلیل مشورتی خودکار: اگر کلید Qwen تنظیم و دسترس‌پذیر باشد، بدون نیاز به کلیک اجرا می‌شود
+  const [aiReady, setAiReady] = useState(false);
+  const autoAnalyzed = useRef<Set<string>>(new Set());
+  const autoRunning = useRef(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchQwenStatus()
+      .then((status) => {
+        if (!cancelled) setAiReady(status.ready);
+      })
+      .catch(() => {
+        if (!cancelled) setAiReady(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!aiReady || autoRunning.current) return;
+    const pending = sorted.filter(
+      (scan) => scan.signal && !autoAnalyzed.current.has(scan.symbol) && !aiResults[scan.symbol]
+    );
+    if (!pending.length) return;
+    autoRunning.current = true;
+    void (async () => {
+      for (const scan of pending) {
+        autoAnalyzed.current.add(scan.symbol);
+        await runQwen(scan);
+      }
+      autoRunning.current = false;
+    })();
+  }, [aiReady, scans, sorted, aiResults]);
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <h1 className="text-lg font-extrabold">فرصت‌های واجد شرایط</h1>
+          {aiReady ? (
+            <Badge variant="outline" className="w-fit rounded-full border-sky-500/30 px-2.5 py-0.5 text-[10px] text-sky-400">
+              تحلیل مشورتی خودکار فعال
+            </Badge>
+          ) : null}
           <p className="text-xs text-muted-foreground">
             نتیجه اسکن {sorted.length.toLocaleString("fa-IR")} نماد — سیگنال فقط از Price Action روی کندل بسته‌شده؛ Grid هرگز سیگنال ورود نیست
           </p>
