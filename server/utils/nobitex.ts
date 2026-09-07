@@ -1,7 +1,6 @@
-import { createCipheriv, createDecipheriv, createHash, createPrivateKey, randomBytes, sign } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync, unlinkSync, renameSync } from "node:fs";
-import { join } from "node:path";
+import { createPrivateKey, sign } from "node:crypto";
 import { createError } from "nitro/h3";
+import { deleteState, readState, writeState } from "./stateStore";
 
 /**
  * لایه امن نوبیتکس — فقط سمت سرور.
@@ -20,9 +19,7 @@ export interface StoredKeys {
 // endpoints are served from apiv2.nobitex.ir.
 const BASE_URL = "https://apiv2.nobitex.ir";
 const SANDBOX_URL = "https://testnetapi.nobitex.ir";
-const DATA_DIR = join(process.cwd(), ".tradeban");
-const KEYS_FILE = join(DATA_DIR, "keys.enc.json");
-const MASTER_FILE = join(DATA_DIR, "master.key");
+const KEYS_DOC = "keys.enc.json";
 
 const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 30_000;
@@ -46,83 +43,17 @@ export class NobitexRequestError extends Error {
   }
 }
 
-function ensureDir(): void {
-  if (!existsSync(DATA_DIR)) {
-    mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
-  }
+/** کلیدهای API نوبیتکس — رمزنگاری‌شده در لایهٔ ذخیرهٔ متحد (fs محلی، KV روی Vercel). */
+export async function loadKeys(): Promise<StoredKeys | null> {
+  return readState<StoredKeys | null>(KEYS_DOC, null);
 }
 
-/** کلید رمزنگاری: از TRADEBAN_SECRET یا یک کلید تصادفی محلی (فایل با مجوز 600) */
-function masterSecret(): string {
-  const envSecret = process.env.TRADEBAN_SECRET;
-  if (envSecret) return envSecret;
-  ensureDir();
-  if (!existsSync(MASTER_FILE)) {
-    writeFileSync(MASTER_FILE, randomBytes(32).toString("hex"), { mode: 0o600 });
-    chmodSync(MASTER_FILE, 0o600);
-  }
-  return readFileSync(MASTER_FILE, "utf8");
+export async function saveKeys(keys: StoredKeys): Promise<void> {
+  await writeState(KEYS_DOC, keys);
 }
 
-function deriveKey(): Buffer {
-  return createHash("sha256").update(masterSecret()).digest();
-}
-
-function encryptJson(data: unknown): string {
-  const iv = randomBytes(12);
-  const cipher = createCipheriv("aes-256-gcm", deriveKey(), iv);
-  const enc = Buffer.concat([cipher.update(JSON.stringify(data), "utf8"), cipher.final()]);
-  const tag = cipher.getAuthTag();
-  return JSON.stringify({ iv: iv.toString("hex"), tag: tag.toString("hex"), data: enc.toString("hex") });
-}
-
-function decryptJson<T>(payload: string): T {
-  const { iv, tag, data } = JSON.parse(payload) as { iv: string; tag: string; data: string };
-  const decipher = createDecipheriv("aes-256-gcm", deriveKey(), Buffer.from(iv, "hex"));
-  decipher.setAuthTag(Buffer.from(tag, "hex"));
-  const dec = Buffer.concat([decipher.update(Buffer.from(data, "hex")), decipher.final()]);
-  return JSON.parse(dec.toString("utf8")) as T;
-}
-
-export function loadKeys(): StoredKeys | null {
-  try {
-    if (!existsSync(KEYS_FILE)) return null;
-    return decryptJson<StoredKeys>(readFileSync(KEYS_FILE, "utf8"));
-  } catch {
-    return null;
-  }
-}
-
-export function saveKeys(keys: StoredKeys): void {
-  ensureDir();
-  writeFileSync(KEYS_FILE, encryptJson(keys), { mode: 0o600 });
-  chmodSync(KEYS_FILE, 0o600);
-}
-
-export function deleteKeys(): void {
-  if (existsSync(KEYS_FILE)) unlinkSync(KEYS_FILE);
-}
-
-/** ذخیره state حساس داخلی با همان AES-256-GCM و نوشتن اتمیک. */
-export function saveSecureState(name: string, value: unknown): void {
-  if (!/^[a-z0-9.-]{1,80}$/i.test(name)) throw new Error("نام state امن نامعتبر است");
-  ensureDir();
-  const target = join(DATA_DIR, name);
-  const temporary = `${target}.tmp`;
-  writeFileSync(temporary, encryptJson(value), { mode: 0o600 });
-  chmodSync(temporary, 0o600);
-  renameSync(temporary, target);
-}
-
-export function loadSecureState<T>(name: string, fallback: T): T {
-  if (!/^[a-z0-9.-]{1,80}$/i.test(name)) throw new Error("نام state امن نامعتبر است");
-  try {
-    const target = join(DATA_DIR, name);
-    if (!existsSync(target)) return fallback;
-    return decryptJson<T>(readFileSync(target, "utf8"));
-  } catch {
-    return fallback;
-  }
+export async function deleteKeys(): Promise<void> {
+  await deleteState(KEYS_DOC);
 }
 
 export function baseUrl(sandbox: boolean): string {
@@ -244,7 +175,7 @@ export async function privateRequest(
   path: string,
   opts: { query?: Record<string, string>; body?: unknown; retryable?: boolean } = {}
 ): Promise<unknown> {
-  const keys = loadKeys();
+  const keys = await loadKeys();
   if (!keys) throw createError({ statusCode: 400, statusMessage: "کلید API ذخیره نشده است" });
   // فقط خواندن (GET) بدون فعال‌سازی معامله واقعی مجاز است؛ ارسال/لغو سفارش نیاز به تأیید روشن دارد
   if (method !== "GET" && !keys.realEnabled) {

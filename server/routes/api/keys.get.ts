@@ -3,9 +3,9 @@ import { decodePrivateKey, loadKeys } from "../../utils/nobitex";
 import { assertSensitiveRequest } from "../../utils/requestSecurity";
 
 /** وضعیت کلیدها — هیچ بخشی از secret برنمی‌گردد */
-export default defineHandler((event) => {
+export default defineHandler(async (event) => {
   assertSensitiveRequest(event);
-  const keys = loadKeys();
+  const keys = await loadKeys();
   if (!keys) return { configured: false, needsUpgrade: false, realEnabled: false, sandbox: false, maskedKey: null };
   let valid = true;
   try {

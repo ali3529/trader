@@ -11,15 +11,15 @@ import { cancelOrder as ramzinexCancel, loadRamzinexKeys } from "../../utils/ram
  */
 export default defineHandler(async (event) => {
   assertSensitiveRequest(event, { mutation: true });
-  const keys = loadKeys();
+  const keys = await loadKeys();
   if (!keys || !keys.realEnabled) {
     throw createError({ statusCode: 403, statusMessage: "معامله واقعی فعال نیست" });
   }
   const body = await readBody<{ id?: string | number }>(event);
   const id = Number(body?.id);
   if (!Number.isInteger(id) || id <= 0) throw createError({ statusCode: 400, statusMessage: "شناسه سفارش نامعتبر" });
-  if (getExchangeProvider() === "ramzinex") {
-    const rzKeys = loadRamzinexKeys();
+  if ((await getExchangeProvider()) === "ramzinex") {
+    const rzKeys = await loadRamzinexKeys();
     if (!rzKeys?.realEnabled) throw createError({ statusCode: 403, statusMessage: "معامله واقعی رمزینکس فعال نیست" });
     await ramzinexCancel(id);
     return { ok: true };

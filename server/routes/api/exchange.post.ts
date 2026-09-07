@@ -11,6 +11,6 @@ export default defineHandler(async (event) => {
   if (provider !== "nobitex" && provider !== "ramzinex") {
     throw createError({ statusCode: 400, statusMessage: "صرافی معتبر نیست (nobitex یا ramzinex)" });
   }
-  setExchangeProvider(provider as ExchangeProvider);
-  return { ok: true, provider: getExchangeProvider() };
+  await setExchangeProvider(provider as ExchangeProvider);
+  return { ok: true, provider: await getExchangeProvider() };
 });

@@ -1,4 +1,4 @@
-import { loadSecureState, saveSecureState } from "./nobitex";
+import { readState, writeState } from "./stateStore";
 
 /**
  * ادپتر رمزینکس — طبق مستندات رسمی docs.ramzinex.ir:
@@ -21,12 +21,12 @@ export interface RamzinexKeys {
   realEnabled: boolean;
 }
 
-export function loadRamzinexKeys(): RamzinexKeys | null {
-  return loadSecureState<RamzinexKeys | null>(KEYS_FILE, null);
+export async function loadRamzinexKeys(): Promise<RamzinexKeys | null> {
+  return readState<RamzinexKeys | null>(KEYS_FILE, null);
 }
 
-export function saveRamzinexKeys(keys: RamzinexKeys): void {
-  saveSecureState(KEYS_FILE, keys);
+export async function saveRamzinexKeys(keys: RamzinexKeys): Promise<void> {
+  await writeState(KEYS_FILE, keys);
 }
 
 export class RamzinexError extends Error {
@@ -133,7 +133,7 @@ function jwtExp(token: string): number {
 }
 
 export async function getPrivateToken(force = false): Promise<string> {
-  const keys = loadRamzinexKeys();
+  const keys = await loadRamzinexKeys();
   if (!keys) throw new RamzinexError("کلید رمزینکس ذخیره نشده است", 400);
   if (!force && tokenCache && tokenCache.exp * 1000 - Date.now() > 60_000) return tokenCache.token;
   const res = await guardedFetch(`${PRIVATE_BASE}/auth/api_key/getToken`, {
@@ -155,7 +155,7 @@ export async function privateRequest<T>(
   path: string,
   opts: { query?: Record<string, string>; body?: unknown; v2?: boolean; retryable?: boolean } = {},
 ): Promise<T> {
-  const keys = loadRamzinexKeys();
+  const keys = await loadRamzinexKeys();
   if (!keys) throw new RamzinexError("کلید رمزینکس ذخیره نشده است", 400);
   const base = opts.v2 ? PRIVATE_V2_BASE : PRIVATE_BASE;
   const qs = opts.query ? new URLSearchParams(opts.query).toString() : "";

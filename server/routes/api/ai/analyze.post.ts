@@ -50,7 +50,7 @@ export default defineHandler(async (event) => {
     },
   };
   try {
-    return await analyzeWithAi(loadAiConfig(), snapshot);
+    return await analyzeWithAi(await loadAiConfig(), snapshot);
   } catch (error) {
     throw createError({
       statusCode: 503,

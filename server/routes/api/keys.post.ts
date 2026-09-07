@@ -32,6 +32,6 @@ export default defineHandler(async (event) => {
   if (enableReal && body?.confirm !== "ENABLE-REAL-TRADING") {
     throw createError({ statusCode: 400, statusMessage: "فعال‌سازی معامله واقعی نیازمند تأیید روشن کاربر است" });
   }
-  saveKeys({ apiKey, apiSecret, sandbox: body?.sandbox === true, realEnabled: enableReal });
+  await saveKeys({ apiKey, apiSecret, sandbox: body?.sandbox === true, realEnabled: enableReal });
   return { ok: true, realEnabled: enableReal };
 });

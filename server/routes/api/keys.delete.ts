@@ -3,8 +3,8 @@ import { deleteKeys } from "../../utils/nobitex";
 import { assertSensitiveRequest } from "../../utils/requestSecurity";
 
 /** حذف کلیدهای ذخیره‌شده از سرور */
-export default defineHandler((event) => {
+export default defineHandler(async (event) => {
   assertSensitiveRequest(event, { mutation: true });
-  deleteKeys();
+  await deleteKeys();
   return { ok: true };
 });

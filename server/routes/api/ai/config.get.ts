@@ -7,7 +7,7 @@ export default defineHandler(async (event) => {
   assertSensitiveRequest(event);
   let config;
   try {
-    config = loadAiConfig();
+    config = await loadAiConfig();
   } catch {
     config = {
       provider: "ollama" as const,

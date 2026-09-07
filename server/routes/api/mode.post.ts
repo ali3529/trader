@@ -18,11 +18,11 @@ export default defineHandler(async (event) => {
     throw createError({ statusCode: 400, statusMessage: "حالت نامعتبر است" });
   }
   if (mode === "real") {
-    const keys = getExchangeProvider() === "ramzinex" ? loadRamzinexKeys() : loadKeys();
+    const keys = (await getExchangeProvider()) === "ramzinex" ? await loadRamzinexKeys() : await loadKeys();
     if (!keys || !keys.realEnabled) {
       throw createError({ statusCode: 403, statusMessage: "معامله واقعی فعال نیست" });
     }
   }
-  setBotMode(mode as BotMode);
+  await setBotMode(mode as BotMode);
   return { ok: true, mode };
 });

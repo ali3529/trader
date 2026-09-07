@@ -2,7 +2,7 @@ import { defineHandler } from "nitro";
 import { createError } from "nitro/h3";
 import { decodePrivateKey, privateRequest, loadKeys } from "../../utils/nobitex";
 import { assertSensitiveRequest } from "../../utils/requestSecurity";
-import { loadOrderLedger, recordBotOrder } from "../../utils/orderLedger";
+import { loadOrderLedger, recordBotOrder, type BotOrderRecord } from "../../utils/orderLedger";
 import { getExchangeProvider } from "../../utils/exchangePrefs";
 import { fetchAccount as ramzinexAccount, loadRamzinexKeys, RamzinexError } from "../../utils/ramzinex";
 
@@ -19,17 +19,17 @@ interface WalletBalance {
  */
 export default defineHandler(async (event) => {
   assertSensitiveRequest(event);
-  if (getExchangeProvider() === "ramzinex") {
-    if (!loadRamzinexKeys()) throw createError({ statusCode: 400, statusMessage: "کلید رمزینکس ذخیره نشده است" });
+  if ((await getExchangeProvider()) === "ramzinex") {
+    if (!(await loadRamzinexKeys())) throw createError({ statusCode: 400, statusMessage: "کلید رمزینکس ذخیره نشده است" });
     try {
       const account = await ramzinexAccount();
-      return { ...account, botOrders: loadOrderLedger() };
+      return { ...account, botOrders: await loadOrderLedger() };
     } catch (error) {
       const status = error instanceof RamzinexError ? error.statusCode : 503;
       throw createError({ statusCode: status >= 400 ? status : 503, statusMessage: (error as Error).message });
     }
   }
-  const keys = loadKeys();
+  const keys = await loadKeys();
   if (!keys) throw createError({ statusCode: 400, statusMessage: "کلید API ذخیره نشده است" });
   try {
     decodePrivateKey(keys.apiSecret);
@@ -53,7 +53,7 @@ export default defineHandler(async (event) => {
     if (isFinite(blocked) && blocked > 0) blockedBalances[coin] = blocked;
     if (isFinite(available) && available > 0) balances[coin] = available;
   }
-  const botOrders = await refreshUnresolvedOrders(loadOrderLedger());
+  const botOrders = await refreshUnresolvedOrders(await loadOrderLedger());
   return {
     balances,
     totalBalances,
@@ -63,7 +63,7 @@ export default defineHandler(async (event) => {
   };
 });
 
-async function refreshUnresolvedOrders(records: ReturnType<typeof loadOrderLedger>) {
+async function refreshUnresolvedOrders(records: BotOrderRecord[]) {
   const unresolved = records.filter((record) => record.reconciliationRequired).slice(-3);
   for (const record of unresolved) {
     try {
@@ -83,7 +83,7 @@ async function refreshUnresolvedOrders(records: ReturnType<typeof loadOrderLedge
           : record.averagePrice,
         reconciliationRequired: !terminal,
       };
-      recordBotOrder(updated);
+      await recordBotOrder(updated);
       Object.assign(record, updated);
     } catch {
       // وضعیت همچنان مبهم می‌ماند و سمت مرورگر اعمال نمی‌شود.

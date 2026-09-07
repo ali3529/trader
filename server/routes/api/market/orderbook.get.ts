@@ -14,7 +14,7 @@ import { fetchOrderBook as ramzinexOrderBook } from "../../../utils/ramzinex";
 export default defineHandler(async (event) => {
   const q = getQuery(event);
   const symbol = assertValidSymbol(String(q.symbol ?? "").toUpperCase());
-  if (getExchangeProvider() === "ramzinex") {
+  if ((await getExchangeProvider()) === "ramzinex") {
     try {
       const book = await ramzinexOrderBook(symbol);
       return { asks: book.asks, bids: book.bids, source: "live" as const };

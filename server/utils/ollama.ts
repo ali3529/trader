@@ -1,4 +1,4 @@
-import { loadSecureState, saveSecureState } from "./nobitex";
+import { readState, writeState } from "./stateStore";
 
 /**
  * لایهٔ تحلیلگر AI — دو ارائه‌دهنده:
@@ -55,8 +55,8 @@ function assertValidAiConfig(cfg: AiConfig): void {
 }
 
 /** تنظیمات فعال AI: اول ذخیرهٔ رمزنگاری‌شده کاربر، بعد متغیرهای محیطی، بعد پیش‌فرض‌ها */
-export function loadAiConfig(): AiConfig {
-  const stored = loadSecureState<Partial<AiConfig>>(AI_STATE_FILE, {});
+export async function loadAiConfig(): Promise<AiConfig> {
+  const stored = await readState<Partial<AiConfig>>(AI_STATE_FILE, {});
   const config: AiConfig = {
     provider: stored.provider === "qwen-cloud" ? "qwen-cloud" : "ollama",
     ollamaBaseUrl: String(stored.ollamaBaseUrl ?? process.env.NITRO_OLLAMA_URL ?? "http://127.0.0.1:11434")
@@ -71,9 +71,9 @@ export function loadAiConfig(): AiConfig {
   return config;
 }
 
-export function saveAiConfig(config: AiConfig): void {
+export async function saveAiConfig(config: AiConfig): Promise<void> {
   assertValidAiConfig(config);
-  saveSecureState(AI_STATE_FILE, {
+  await writeState(AI_STATE_FILE, {
     provider: config.provider,
     ollamaBaseUrl: config.ollamaBaseUrl,
     ollamaModel: config.ollamaModel,

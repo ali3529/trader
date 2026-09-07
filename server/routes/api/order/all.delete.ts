@@ -18,8 +18,8 @@ export default defineHandler(async (event) => {
   assertSensitiveRequest(event, { mutation: true });
   const body = await readBody<{ ids?: Array<number | string>; symbols?: string[] }>(event);
 
-  if (getExchangeProvider() === "ramzinex") {
-    const rzKeys = loadRamzinexKeys();
+  if ((await getExchangeProvider()) === "ramzinex") {
+    const rzKeys = await loadRamzinexKeys();
     if (!rzKeys?.realEnabled) throw createError({ statusCode: 403, statusMessage: "معامله واقعی رمزینکس فعال نیست" });
     let symbols = Array.from(
       new Set((body?.symbols ?? []).map((s) => String(s).trim().toUpperCase()).filter(Boolean)),
@@ -42,7 +42,7 @@ export default defineHandler(async (event) => {
     return { ok: true, canceled: canceled || null };
   }
 
-  const keys = loadKeys();
+  const keys = await loadKeys();
   if (!keys || !keys.realEnabled) throw createError({ statusCode: 403, statusMessage: "معامله واقعی فعال نیست" });
   const ids = (body?.ids ?? []).map(Number).filter((n) => Number.isInteger(n) && n > 0);
   if (!ids.length) throw createError({ statusCode: 400, statusMessage: "سفارش بازی برای لغو وجود ندارد" });

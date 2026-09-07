@@ -18,7 +18,7 @@ interface Body {
 export default defineHandler(async (event) => {
   assertSensitiveRequest(event, { mutation: true });
   const body = await readBody<Body>(event);
-  const current = loadRamzinexKeys();
+  const current = await loadRamzinexKeys();
   const apiKey = (body?.apiKey ?? "").trim() || current?.apiKey || "";
   const secret = (body?.secret ?? "").trim() || current?.secret || "";
   if (!apiKey || !secret) {
@@ -42,6 +42,6 @@ export default defineHandler(async (event) => {
     }
   }
   const realEnabled = body?.enableReal === undefined ? current?.realEnabled === true : enableReal;
-  saveRamzinexKeys({ apiKey, secret, realEnabled });
+  await saveRamzinexKeys({ apiKey, secret, realEnabled });
   return { ok: true, realEnabled, warning };
 });

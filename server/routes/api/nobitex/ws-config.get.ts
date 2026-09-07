@@ -37,7 +37,7 @@ function withBudget<T>(promise: Promise<T>, ms: number): Promise<T> {
  */
 export default defineHandler(async (event) => {
   assertSensitiveRequest(event);
-  const keys = loadKeys();
+  const keys = await loadKeys();
   const wsUrl = keys?.sandbox
     ? "wss://testnetws.nobitex.ir/connection/websocket"
     : "wss://ws.nobitex.ir/connection/websocket";

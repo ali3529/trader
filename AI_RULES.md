@@ -22,7 +22,7 @@ Available packages and libraries:
 
 - Persian RTL trading bot for Nobitex; dark terminal UI (see `src/globals.css` tokens: profit/loss/warn).
 - **Paper trading is the default.** Real trading requires the user's explicit confirmation (`ENABLE-REAL-TRADING`). Never weaken this gate.
-- **API keys live only server-side** (`server/utils/nobitex.ts`, AES-256-GCM in `.tradeban/`, git-ignored). NEVER hardcode keys or import `node:crypto`/server code from `src/`.
+- **API keys live only server-side.** All sensitive state (exchange keys, prefs, bot mode, order ledger, AI config) goes through `server/utils/stateStore.ts` — async `readState`/`writeState`/`deleteState`, AES-256-GCM, dual backend: `fs` (`.tradeban/`, git-ignored, local default) or Upstash KV REST when `KV_REST_API_URL`+`KV_REST_API_TOKEN` are set (required for Vercel persistence). NEVER write sync fs/crypto state code outside stateStore, never hardcode keys, never import `node:crypto`/server code from `src/`.
 - Pure strategy/risk/backtest logic lives in `src/lib/` (no UI, no network); UI reads engine state via `src/context/BotContext.tsx` only.
 - All strategy thresholds are adjustable through `src/lib/config.ts` — don't hardcode numbers elsewhere.
 - Nobitex current API uses `https://apiv2.nobitex.ir`: OHLC at `/market/udf/history` (`from`/`to` are unix seconds; UDF resolutions are `15`/`60`/`240`), orderbook at `/v3/orderbook/{SYMBOL}`, orders at `/market/orders/*`, and wallets at `/v2/wallets`. API keys use Ed25519 with `Nobitex-Key`/`Nobitex-Signature`/`Nobitex-Timestamp`; signature payload is `timestamp + METHOD + full_path_with_query + raw_body`.

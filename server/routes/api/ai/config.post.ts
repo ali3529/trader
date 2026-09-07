@@ -19,7 +19,7 @@ export default defineHandler(async (event) => {
   const body = await readBody<Body>(event);
   let current: AiConfig;
   try {
-    current = loadAiConfig();
+    current = await loadAiConfig();
   } catch {
     current = {
       provider: "ollama",
@@ -40,7 +40,7 @@ export default defineHandler(async (event) => {
     qwenToken: token || current.qwenToken,
   };
   try {
-    saveAiConfig(next);
+    await saveAiConfig(next);
   } catch (error) {
     throw createError({ statusCode: 400, statusMessage: (error as Error).message });
   }

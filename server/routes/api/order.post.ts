@@ -58,8 +58,8 @@ export default defineHandler(async (event) => {
 });
 
 async function submitOrder(body: Body) {
-  if (getExchangeProvider() === "ramzinex") return submitRamzinexOrder(body);
-  const keys = loadKeys();
+  if ((await getExchangeProvider()) === "ramzinex") return submitRamzinexOrder(body);
+  const keys = await loadKeys();
   if (!keys || !keys.realEnabled) {
     throw createError({ statusCode: 403, statusMessage: "معامله واقعی فعال نیست" });
   }
@@ -148,7 +148,7 @@ async function submitOrder(body: Body) {
     averagePrice: toToman(Number(confirmed.averagePrice ?? confirmed.price ?? 0)),
     reconciliationRequired,
   };
-  recordBotOrder({
+  await recordBotOrder({
     orderId: result.order.id,
     clientOrderId: response.clientOrderId,
     symbol,
@@ -246,7 +246,7 @@ function finitePositive(value: unknown): number | undefined {
  * همان سقف‌های ریسک سرور با دارایی‌های رمزینکس اعمال می‌شود.
  */
 async function submitRamzinexOrder(body: Body) {
-  const keys = loadRamzinexKeys();
+  const keys = await loadRamzinexKeys();
   if (!keys || !keys.realEnabled) {
     throw createError({ statusCode: 403, statusMessage: "معامله واقعی رمزینکس فعال نیست" });
   }
@@ -333,7 +333,7 @@ async function submitRamzinexOrder(body: Body) {
     averagePrice: toToman(confirmed.averagePrice || confirmed.price),
     reconciliationRequired,
   };
-  recordBotOrder({
+  await recordBotOrder({
     orderId,
     clientOrderId,
     symbol,

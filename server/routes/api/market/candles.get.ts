@@ -41,7 +41,7 @@ export default defineHandler(async (event) => {
   if (!isFinite(from) || !isFinite(to) || to <= from) throw createError({ statusCode: 400, statusMessage: "بازه زمانی نامعتبر" });
 
   // رمزینکس: /chart/tv/history همان قالب UDF را دارد (زمان ثانیه)
-  if (getExchangeProvider() === "ramzinex") {
+  if ((await getExchangeProvider()) === "ramzinex") {
     try {
       const minutes = Number(resolution) >= 60 ? Number(resolution) / 60 : Number(resolution);
       const rz = await ramzinexCandles(symbol, minutes, from / 1000, to / 1000);

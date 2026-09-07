@@ -12,7 +12,7 @@ interface Body {
 export default defineHandler(async (event) => {
   assertSensitiveRequest(event, { mutation: true });
   const body = await readBody<Body>(event);
-  const keys = loadKeys();
+  const keys = await loadKeys();
   if (!keys) throw createError({ statusCode: 400, statusMessage: "ابتدا کلیدهای API را ذخیره کنید" });
   try {
     decodePrivateKey(keys.apiSecret);
@@ -36,6 +36,6 @@ export default defineHandler(async (event) => {
       warning = `معامله واقعی فعال شد ولی نوبیتکس اکنون در دسترس نیست؛ تا بازگشت اتصال هیچ سفارشی ارسال نمی‌شود. (${(error as Error).message})`;
     }
   }
-  saveKeys({ ...keys, realEnabled: enable });
+  await saveKeys({ ...keys, realEnabled: enable });
   return { ok: true, realEnabled: enable, verified: warning === null, warning };
 });
