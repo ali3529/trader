@@ -97,6 +97,31 @@ export function TelegramCard() {
     }
   };
 
+  const [finding, setFinding] = useState(false);
+  const findChatId = async () => {
+    setFinding(true);
+    setMessage(null);
+    try {
+      const res = await fetch("/api/telegram/updates", { cache: "no-store" });
+      const data = (await res.json()) as { chats?: Array<{ id: number; title: string }> };
+      const chats = data.chats ?? [];
+      if (!chats.length) {
+        setMessage("گفتگویی پیدا نشد — اول در تلگرام به ربات خود پیام دهید (Start) و دوباره تلاش کنید.");
+      } else {
+        setChatId(String(chats[0].id));
+        setMessage(
+          chats.length === 1
+            ? `chat_id پیدا شد: ${chats[0].id} (${chats[0].title}) — ذخیره کنید.`
+            : `چند گفتگو پیدا شد؛ اولین انتخاب شد: ${chats.map((c) => `${c.id} (${c.title})`).join(" | ")}`,
+        );
+      }
+    } catch (err) {
+      setMessage(`خطا در یافتن chat_id: ${(err as Error).message}`);
+    } finally {
+      setFinding(false);
+    }
+  };
+
   return (
     <Card className="border-border/60">
       <CardHeader className="pb-2">
@@ -166,6 +191,16 @@ export function TelegramCard() {
           </Button>
           <Button size="sm" variant="outline" className="rounded-full" disabled={testing || !view?.configured} onClick={() => void test()}>
             ارسال پیام تست
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="rounded-full"
+            disabled={finding || !view?.configured}
+            title="اول توکن را ذخیره کنید، در تلگرام به ربات Start بزنید، سپس اینجا بزنید"
+            onClick={() => void findChatId()}
+          >
+            یافتن خودکار chat_id
           </Button>
         </div>
         {message ? <p className={message.startsWith("خطا") || message.startsWith("ارسال ناموفق") ? "text-loss" : "text-profit"}>{message}</p> : null}

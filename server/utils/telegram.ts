@@ -88,6 +88,32 @@ export async function sendTelegram(text: string): Promise<{ ok: boolean; error?:
   }
 }
 
+/** گفتگوهای اخیر ربات (برای پیدا کردن خودکار chat_id) — کاربر باید اول به ربات پیام داده باشد */
+export async function fetchTelegramChatIds(): Promise<Array<{ id: number; title: string }>> {
+  const cfg = await loadTelegramConfig();
+  if (!cfg.botToken) return [];
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${cfg.botToken}/getUpdates`, {
+      signal: AbortSignal.timeout(10_000),
+    });
+    const json = (await res.json().catch(() => null)) as {
+      ok?: boolean;
+      result?: Array<{ message?: { chat?: { id?: number; title?: string; first_name?: string; username?: string } } }>;
+    } | null;
+    if (!json?.ok || !Array.isArray(json.result)) return [];
+    const seen = new Map<number, string>();
+    for (const update of json.result) {
+      const chat = update?.message?.chat;
+      if (chat && typeof chat.id === "number") {
+        seen.set(chat.id, chat.title ?? chat.first_name ?? chat.username ?? String(chat.id));
+      }
+    }
+    return Array.from(seen, ([id, title]) => ({ id, title }));
+  } catch {
+    return [];
+  }
+}
+
 /* --------------------------------- قالب پیام‌ها --------------------------------- */
 
 export interface SignalPayload {
