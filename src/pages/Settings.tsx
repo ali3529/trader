@@ -29,6 +29,18 @@ import type { AiConfigView, AiProvider, QwenStatus } from "@/lib/ai";
 import { markUplinkDown, markUplinkUp, refreshExchangeProvider, setExchangeProvider } from "@/lib/engine/api";
 import type { ExchangeProvider } from "@/lib/engine/api";
 
+/** در production بدنهٔ خطای h3 بدون statusMessage می‌آید؛ پس کدهای رایج را راهنمایی می‌کنیم */
+function describeSaveError(status: number, statusMessage?: string | null): string {
+  if (statusMessage) return statusMessage;
+  if (status === 401) {
+    return "احراز هویت الزامی است — در پنجرهٔ احراز هویت مرورگر، کاربر و رمز TRADEBAN_BASIC_AUTH را وارد کنید.";
+  }
+  if (status === 403) {
+    return "دسترسی به route حساس مسدود است — روی Vercel متغیر محیطی TRADEBAN_BASIC_AUTH را ست کنید و Redeploy بزنید، سپس در پنجرهٔ احراز هویت مرورگر لاگین کنید.";
+  }
+  return `HTTP ${status}`;
+}
+
 interface FieldDef {
   key: keyof StrategyConfig;
   label: string;
@@ -269,7 +281,7 @@ export default function SettingsPage() {
       });
       if (!res.ok) {
         const b = (await res.json().catch(() => null)) as { statusMessage?: string } | null;
-        setRzMsg({ ok: false, text: `ذخیره ناموفق: ${b?.statusMessage ?? `HTTP ${res.status}`}` });
+        setRzMsg({ ok: false, text: `ذخیره ناموفق: ${describeSaveError(res.status, b?.statusMessage)}` });
         return;
       }
       setRzApiKey("");
@@ -395,7 +407,7 @@ export default function SettingsPage() {
       });
       if (!res.ok) {
         const body = (await res.json().catch(() => null)) as { statusMessage?: string; message?: string } | null;
-        setKeyMsg({ ok: false, text: `ذخیره ناموفق: ${body?.statusMessage ?? body?.message ?? `HTTP ${res.status}`}` });
+        setKeyMsg({ ok: false, text: `ذخیره ناموفق: ${describeSaveError(res.status, body?.statusMessage ?? body?.message)}` });
         return;
       }
       setApiKey("");
