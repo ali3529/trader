@@ -132,6 +132,7 @@ export class BotEngine {
       getExchangeProvider() === "ramzinex" ? new RamzinexWebSocket(callbacks) : new NobitexWebSocket(callbacks);
     configureApi(this.cfg);
     this.restore();
+    void this.restoreMode();
     this.apiLogs = getApiLogs();
     onApiLog((entry) => {
       this.apiLogs = getApiLogs();
@@ -280,6 +281,43 @@ export class BotEngine {
       this.revalueRealCash();
     }
     this.notify();
+    this.persistMode(mode);
+  }
+
+  /** حالت معامله روی سرور ذخیره می‌شود تا پس از refresh هم حفظ بماند */
+  private persistMode(mode: "paper" | "real"): void {
+    fetch("/api/mode", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode }),
+    }).catch(() => undefined);
+  }
+
+  /**
+   * بازیابی حالت ذخیره‌شده پس از بارگذاری صفحه — فقط اگر «real» ذخیره شده باشد
+   * و دروازهٔ معامله واقعی صرافی فعال هنوز روشن باشد؛ وگرنه paper می‌ماند.
+   */
+  private async restoreMode(): Promise<void> {
+    try {
+      const res = await fetch("/api/mode", { cache: "no-store" });
+      if (!res.ok) return;
+      const data = (await res.json()) as { mode?: string };
+      if (data.mode !== "real" || this.mode === "real") return;
+      const gate = getExchangeProvider() === "ramzinex" ? "/api/ramzinex/keys" : "/api/keys";
+      const gateRes = (await fetch(gate, { cache: "no-store" }).then((r) => r.json())) as {
+        configured?: boolean;
+        realEnabled?: boolean;
+      };
+      if (!gateRes.configured || !gateRes.realEnabled) return;
+      this.mode = "real";
+      this.loadPortfolio("real");
+      this.reconcileRealPositions();
+      this.revalueRealCash();
+      this.notify();
+      void this.syncWithExchange();
+    } catch {
+      /* در حالت paper می‌ماند */
+    }
   }
 
   /** پس از قطع و وصل اتصال، ابتدا سفارش‌ها و موجودی واقعی صرافی همگام‌سازی می‌شود */
