@@ -29,6 +29,7 @@ import type { NobitexSocketState, RealtimeMarketUpdate } from "./nobitexWebSocke
 import { RamzinexWebSocket } from "./ramzinexWebSocket";
 import type { MarketSocket, MarketSocketCallbacks } from "./ramzinexWebSocket";
 import { formatDate } from "../format";
+import { notifyTelegram } from "./telegramNotify";
 
 const LEGACY_STORE_KEY = "tradeban.engine.v1";
 const PAPER_STORE_KEY = "tradeban.engine.paper.v2";
@@ -514,7 +515,25 @@ export class BotEngine {
           let signal: EntrySignal | null = null;
           if (this.lastSignal1h[symbol] !== lastHour) {
             signal = evaluateEntry({ symbol, candles4h, candles1h, candles15m, cfg: this.cfg });
-            if (signal) this.lastSignal1h[symbol] = lastHour;
+            if (signal) {
+              this.lastSignal1h[symbol] = lastHour;
+              notifyTelegram({
+                kind: "signal",
+                data: {
+                  symbol,
+                  score: signal.score,
+                  qualified: signal.qualified,
+                  entry: signal.entry,
+                  stop: signal.stop,
+                  target: signal.target,
+                  rr: signal.rr,
+                  pattern: signal.pattern ? (PATTERN_LABELS[signal.pattern] ?? String(signal.pattern)) : null,
+                  volumeRatio: signal.volumeRatio,
+                  time: signal.time,
+                  mode: this.mode,
+                },
+              });
+            }
             if (signal?.qualified) await this.tryOpen(symbol, signal);
           }
 
@@ -549,10 +568,53 @@ export class BotEngine {
       this.lastTick = Date.now();
       this.scheduleNext();
       this.markEquity();
+      this.maybeSendDigest();
     } finally {
       this.busy = false;
       this.notify();
     }
+  }
+
+  private lastDigestAt = 0;
+
+  /** گزارش دوره‌ای: پوزیشن‌های باز + فرصت‌های فعال — حداکثر هر ۴ ساعت یک‌بار */
+  private maybeSendDigest(): void {
+    if (!this.positions.length) return;
+    const now = Date.now();
+    if (now - this.lastDigestAt < 4 * 3_600_000) return;
+    this.lastDigestAt = now;
+    const eq = this.currentEquity();
+    notifyTelegram({
+      kind: "digest",
+      data: {
+        positions: this.positions.map((p) => {
+          const price = this.scans[p.symbol]?.lastPrice ?? p.entry;
+          return {
+            symbol: p.symbol,
+            qty: p.qty,
+            entry: p.entry,
+            price,
+            pnlPct: p.entry > 0 ? ((price - p.entry) / p.entry) * 100 : 0,
+            stop: p.stop,
+            target: p.target,
+            mode: p.mode,
+          };
+        }),
+        opportunities: Object.values(this.scans)
+          .filter((s) => s.signal)
+          .sort((a, b) => (b.signal?.score ?? 0) - (a.signal?.score ?? 0))
+          .slice(0, 5)
+          .map((s) => ({
+            symbol: s.symbol,
+            score: s.signal?.score ?? 0,
+            qualified: s.signal?.qualified ?? false,
+            price: s.lastPrice,
+          })),
+        equity: eq,
+        riskState: riskState(drawdownPct(eq, this.peakEquity), this.cfg),
+        time: now,
+      },
+    });
   }
 
   private emptyScan(symbol: string, note: string): SymbolScan {
@@ -845,6 +907,21 @@ export class BotEngine {
     this.trades.push(trade);
     this.positions = this.positions.filter((x) => x.id !== p.id);
     this.markEquity(time);
+    notifyTelegram({
+      kind: "close",
+      data: {
+        symbol: trade.symbol,
+        qty: trade.qty,
+        entry: trade.entry,
+        exit: trade.exit,
+        pnl: trade.pnl,
+        pnlPct: trade.pnlPct,
+        exitReason: EXIT_REASON_LABELS[trade.exitReason] ?? trade.exitReason,
+        mode: trade.mode,
+        holdMs: trade.holdMs,
+        time: trade.closedAt,
+      },
+    });
     return true;
   }
 
@@ -925,6 +1002,20 @@ export class BotEngine {
     this.positions.push(position);
     this.lastProcessed15m[symbol] = signal.time;
     this.markEquity();
+    notifyTelegram({
+      kind: "open",
+      data: {
+        symbol,
+        qty,
+        entry: fill,
+        stop: signal.stop,
+        target: signal.target,
+        rr: signal.rr,
+        score: signal.score,
+        mode: this.mode,
+        time: Date.now(),
+      },
+    });
   }
 
   closePositionManually(id: string): void {

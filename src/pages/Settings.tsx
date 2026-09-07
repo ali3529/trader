@@ -28,6 +28,7 @@ import { fetchAiConfig, fetchQwenStatus, saveAiConfig } from "@/lib/ai";
 import type { AiConfigView, AiProvider, QwenStatus } from "@/lib/ai";
 import { markUplinkDown, markUplinkUp, refreshExchangeProvider, setExchangeProvider } from "@/lib/engine/api";
 import type { ExchangeProvider } from "@/lib/engine/api";
+import { TelegramCard } from "@/components/TelegramCard";
 
 /** در production بدنهٔ خطای h3 بدون statusMessage می‌آید؛ پس کدهای رایج را راهنمایی می‌کنیم */
 function describeSaveError(status: number, statusMessage?: string | null): string {
@@ -979,6 +980,8 @@ export default function SettingsPage() {
               <p className="text-muted-foreground">در صفحه «فرصت‌ها» دکمه «بررسی مشورتی Qwen» از همان ارائه‌دهندهٔ انتخاب‌شده اینجا استفاده می‌کند. تصمیم قطعی همچنان فقط با موتور Price Action و ریسک انجام می‌شود.</p>
             </CardContent>
           </Card>
+
+          <TelegramCard />
         </TabsContent>
       </Tabs>
     </div>
