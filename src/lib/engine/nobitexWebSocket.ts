@@ -55,6 +55,7 @@ export class NobitexWebSocket {
   private nextId = 2;
   private privateEnabled = false;
   private authParam: string | null = null;
+  private pendingSubs = new Map<number, string>();
   private state: NobitexSocketState = {
     status: "idle",
     privateEnabled: false,
@@ -220,8 +221,26 @@ export class NobitexWebSocket {
       return;
     }
 
+    const disconnect = asRecord(message.disconnect);
+    if (disconnect) {
+      console.info(
+        `[nobitex-ws] server disconnect code=${String(disconnect.code)} reason=${String(disconnect.reason ?? "")}`,
+      );
+      return;
+    }
+
     const error = asRecord(message.error);
     if (error) {
+      const commandId = typeof message.id === "number" ? message.id : null;
+      const channel = commandId !== null ? this.pendingSubs.get(commandId) : undefined;
+      if (channel) {
+        // خطای یک کانال (مثلاً نام کانال نامعتبر) نباید کل اتصال را خطا نشان دهد
+        this.pendingSubs.delete(commandId as number);
+        console.info(
+          `[nobitex-ws] subscribe failed: ${channel} | ${String(error.message ?? error.code ?? "")}`,
+        );
+        return;
+      }
       const detail = String(error.message ?? error.code ?? "WebSocket protocol error");
       this.setState({ status: "error", error: detail });
     }
@@ -242,8 +261,11 @@ export class NobitexWebSocket {
     if (this.privateEnabled && this.authParam) {
       channels.push(`private:orders#${this.authParam}`, `private:trades#${this.authParam}`);
     }
+    this.pendingSubs.clear();
     for (const channel of channels.slice(0, 450)) {
-      socket.send(JSON.stringify({ id: this.nextId++, subscribe: { channel } }));
+      const id = this.nextId++;
+      this.pendingSubs.set(id, channel);
+      socket.send(JSON.stringify({ id, subscribe: { channel } }));
     }
   }
 
