@@ -262,6 +262,8 @@ async function loadPairs(): Promise<PairsCache> {
     PRIVATE_V2_BASE,
   );
   const pairs = Array.isArray(payload) ? payload : payload?.pairs ?? [];
+  // قالب واقعی پاسخ را یک‌بار در لاگ سرور می‌گذاریم تا تشخیص نگاشت ممکن باشد
+  if (pairs.length) console.log(`[ramzinex] pairs sample: ${JSON.stringify(pairs[0]).slice(0, 300)}`);
   const byNorm = new Map<string, MarketInfo>();
   const byId = new Map<number, string>();
   for (const item of pairs ?? []) {
