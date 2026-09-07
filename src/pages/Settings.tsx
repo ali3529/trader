@@ -314,16 +314,18 @@ export default function SettingsPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(enable ? { enable: true, confirm: confirmText } : { enable: false }),
       });
-      const data = (await res.json()) as { ok?: boolean; statusMessage?: string };
+      const data = (await res.json()) as { ok?: boolean; statusMessage?: string; warning?: string | null };
       if (!res.ok) {
         setKeyMsg({ ok: false, text: data.statusMessage ?? "عملیات ناموفق بود" });
         return;
       }
       setKeyMsg({
-        ok: true,
-        text: enable
-          ? "معامله واقعی فعال شد. اکنون می‌توانید حالت ربات را روی «واقعی» بگذارید."
-          : "معامله واقعی غیرفعال شد.",
+        ok: !data.warning,
+        text: data.warning
+          ? data.warning
+          : enable
+            ? "معامله واقعی فعال شد. اکنون می‌توانید حالت ربات را روی «واقعی» بگذارید."
+            : "معامله واقعی غیرفعال شد.",
       });
       setRealDialogOpen(false);
       setConfirmText("");

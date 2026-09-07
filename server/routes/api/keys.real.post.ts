@@ -1,6 +1,6 @@
 import { defineHandler } from "nitro";
 import { readBody, createError } from "nitro/h3";
-import { decodePrivateKey, loadKeys, privateRequest, saveKeys } from "../../utils/nobitex";
+import { decodePrivateKey, loadKeys, NobitexRequestError, privateRequest, saveKeys } from "../../utils/nobitex";
 import { assertSensitiveRequest } from "../../utils/requestSecurity";
 
 interface Body {
@@ -23,13 +23,19 @@ export default defineHandler(async (event) => {
   if (enable && body?.confirm !== "ENABLE-REAL-TRADING") {
     throw createError({ statusCode: 400, statusMessage: "فعال‌سازی معامله واقعی نیازمند تأیید روشن کاربر است" });
   }
+  let warning: string | null = null;
   if (enable) {
     try {
       await privateRequest("GET", "/users/profile");
     } catch (error) {
-      throw createError({ statusCode: 401, statusMessage: `اتصال نوبیتکس تأیید نشد: ${(error as Error).message}` });
+      const status = error instanceof NobitexRequestError ? error.statusCode : 0;
+      // کلید نامعتبر = سد قطعی؛ ولی دسترس‌ناپذیری شبکه نباید فعال‌سازی محلی را ببندد
+      if (status === 400 || status === 401 || status === 403) {
+        throw createError({ statusCode: 401, statusMessage: `اتصال نوبیتکس تأیید نشد: ${(error as Error).message}` });
+      }
+      warning = `معامله واقعی فعال شد ولی نوبیتکس اکنون در دسترس نیست؛ تا بازگشت اتصال هیچ سفارشی ارسال نمی‌شود. (${(error as Error).message})`;
     }
   }
   saveKeys({ ...keys, realEnabled: enable });
-  return { ok: true, realEnabled: enable };
+  return { ok: true, realEnabled: enable, verified: warning === null, warning };
 });
