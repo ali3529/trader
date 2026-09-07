@@ -1,11 +1,55 @@
 import type { SymbolScan } from "./types";
 
+export type AiProvider = "ollama" | "qwen-cloud";
+
+export interface AiConfigView {
+  provider: AiProvider;
+  ollamaBaseUrl: string;
+  ollamaModel: string;
+  qwenBaseUrl: string;
+  qwenModel: string;
+  hasToken: boolean;
+  tokenMasked: string | null;
+}
+
+export interface AiConfigPayload {
+  provider: AiProvider;
+  ollamaBaseUrl: string;
+  ollamaModel: string;
+  qwenBaseUrl: string;
+  qwenModel: string;
+  /** فقط وقتی غیرخالی بفرستید که قصد جایگزینی توکن ذخیره‌شده را دارید */
+  qwenToken: string;
+}
+
 export interface QwenStatus {
+  provider?: AiProvider;
   reachable: boolean;
   ready: boolean;
   model: string;
   installedModels: string[];
   error?: string;
+}
+
+export async function fetchAiConfig(): Promise<AiConfigView> {
+  const response = await fetch("/api/ai/config", { cache: "no-store" });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.json() as Promise<AiConfigView>;
+}
+
+export async function saveAiConfig(payload: AiConfigPayload): Promise<void> {
+  const response = await fetch("/api/ai/config", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const body = (await response.json().catch(() => null)) as {
+      statusMessage?: string;
+      message?: string;
+    } | null;
+    throw new Error(body?.statusMessage ?? body?.message ?? `HTTP ${response.status}`);
+  }
 }
 
 export interface QwenAnalysis {

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { BrainCircuit, KeyRound, Landmark, ListChecks, RotateCcw, Save, ShieldAlert, Trash2 } from "lucide-react";
+import { BrainCircuit, Cloud, Cpu, KeyRound, Landmark, ListChecks, RotateCcw, Save, ShieldAlert, Trash2 } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -24,8 +24,8 @@ import { useEngine, useEngineState } from "@/context/BotContext";
 import { DEFAULT_CONFIG } from "@/lib/config";
 import type { StrategyConfig } from "@/lib/config";
 import { cn } from "@/lib/utils";
-import { fetchQwenStatus } from "@/lib/ai";
-import type { QwenStatus } from "@/lib/ai";
+import { fetchAiConfig, fetchQwenStatus, saveAiConfig } from "@/lib/ai";
+import type { AiConfigView, AiProvider, QwenStatus } from "@/lib/ai";
 
 interface FieldDef {
   key: keyof StrategyConfig;
@@ -155,6 +155,16 @@ export default function SettingsPage() {
   const [confirmText, setConfirmText] = useState("");
   const [realDialogOpen, setRealDialogOpen] = useState(false);
   const [qwenStatus, setQwenStatus] = useState<QwenStatus | null>(null);
+  const [aiConfig, setAiConfig] = useState<AiConfigView | null>(null);
+  const [aiDraft, setAiDraft] = useState({
+    provider: "ollama" as AiProvider,
+    ollamaBaseUrl: "http://127.0.0.1:11434",
+    ollamaModel: "qwen3:4b",
+    qwenBaseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    qwenModel: "qwen-plus",
+    qwenToken: "",
+  });
+  const [aiSaving, setAiSaving] = useState(false);
 
   useEffect(() => setDraft({ ...cfg }), [cfg]);
 
@@ -194,6 +204,7 @@ export default function SettingsPage() {
     void refreshKeyStatus().then((status) => {
       if (status?.configured) void testConnection();
     });
+    void refreshAiConfig();
   }, []);
 
   async function refreshQwenStatus() {
@@ -201,6 +212,39 @@ export default function SettingsPage() {
       setQwenStatus(await fetchQwenStatus());
     } catch (error) {
       setQwenStatus({ reachable: false, ready: false, model: "qwen3:4b", installedModels: [], error: (error as Error).message });
+    }
+  }
+
+  async function refreshAiConfig() {
+    try {
+      const config = await fetchAiConfig();
+      setAiConfig(config);
+      setAiDraft((d) => ({
+        ...d,
+        provider: config.provider,
+        ollamaBaseUrl: config.ollamaBaseUrl,
+        ollamaModel: config.ollamaModel,
+        qwenBaseUrl: config.qwenBaseUrl,
+        qwenModel: config.qwenModel,
+      }));
+    } catch {
+      // وضعیت از طریق badge قابل مشاهده است
+    }
+  }
+
+  async function saveAi() {
+    setAiSaving(true);
+    try {
+      await saveAiConfig({ ...aiDraft, qwenToken: aiDraft.qwenToken.trim() });
+      setSavedMsg("تنظیمات تحلیلگر AI ذخیره شد.");
+      setTimeout(() => setSavedMsg(null), 4000);
+      setAiDraft((d) => ({ ...d, qwenToken: "" }));
+      await Promise.all([refreshAiConfig(), refreshQwenStatus()]);
+    } catch (error) {
+      setSavedMsg((error as Error).message);
+      setTimeout(() => setSavedMsg(null), 6000);
+    } finally {
+      setAiSaving(false);
     }
   }
 
@@ -314,8 +358,8 @@ export default function SettingsPage() {
           <TabsTrigger value="symbols" className="rounded-lg text-xs data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
             <Landmark className="ml-1 h-3.5 w-3.5" /> نمادها
           </TabsTrigger>
-          <TabsTrigger value="ai" className="rounded-lg text-xs data-[state=active]:bg-primary data-[state=active]:text-primary-foreground" onClick={() => void refreshQwenStatus()}>
-            <BrainCircuit className="ml-1 h-3.5 w-3.5" /> Qwen محلی
+          <TabsTrigger value="ai" className="rounded-lg text-xs data-[state=active]:bg-primary data-[state=active]:text-primary-foreground" onClick={() => { void refreshQwenStatus(); void refreshAiConfig(); }}>
+            <BrainCircuit className="ml-1 h-3.5 w-3.5" /> تحلیلگر AI
           </TabsTrigger>
         </TabsList>
 
@@ -576,25 +620,100 @@ export default function SettingsPage() {
         <TabsContent value="ai" className="mt-4 space-y-4">
           <Card className="border-border/60">
             <CardHeader className="pb-2">
-              <CardTitle className="flex items-center gap-2 text-sm font-bold"><BrainCircuit className="h-4 w-4 text-sky-400" /> دستیار محلی Qwen</CardTitle>
+              <CardTitle className="flex items-center gap-2 text-sm font-bold"><BrainCircuit className="h-4 w-4 text-sky-400" /> تحلیلگر AI (محلی یا ابری)</CardTitle>
               <CardDescription className="text-[11px] leading-6">
-                Qwen فقط snapshot سیگنال را تحلیل می‌کند؛ کلید نوبیتکس، موجودی خصوصی و اختیار ارسال سفارش در اختیار مدل قرار نمی‌گیرد.
+                مدل فقط snapshot سیگنال را تحلیل می‌کند؛ کلید نوبیتکس، موجودی خصوصی و اختیار ارسال سفارش هرگز در اختیار مدل قرار نمی‌گیرد. توکن ابری فقط رمزنگاری‌شده (AES-256-GCM) در پوشهٔ .tradeban سمت سرور ذخیره می‌شود و به مرورگر برنمی‌گردد.
               </CardDescription>
             </CardHeader>
-            <CardContent className="space-y-3 text-xs">
+            <CardContent className="space-y-4 text-xs">
               <div className="flex flex-wrap items-center gap-2">
-                <Badge className={cn("rounded-full px-3 py-1", qwenStatus?.ready ? "bg-profit/15 text-profit" : "bg-warn/15 text-warn") }>
-                  {qwenStatus?.ready ? `آماده: ${qwenStatus.model}` : qwenStatus?.reachable ? `Ollama متصل؛ مدل ${qwenStatus.model} نصب نیست` : "Ollama در دسترس نیست"}
+                <Button
+                  size="sm"
+                  variant={aiDraft.provider === "ollama" ? "default" : "outline"}
+                  className="rounded-full"
+                  onClick={() => setAiDraft((d) => ({ ...d, provider: "ollama" }))}
+                >
+                  <Cpu className="ml-1 h-3.5 w-3.5" /> محلی (Ollama)
+                </Button>
+                <Button
+                  size="sm"
+                  variant={aiDraft.provider === "qwen-cloud" ? "default" : "outline"}
+                  className="rounded-full"
+                  onClick={() => setAiDraft((d) => ({ ...d, provider: "qwen-cloud" }))}
+                >
+                  <Cloud className="ml-1 h-3.5 w-3.5" /> ابر Qwen (با توکن)
+                </Button>
+              </div>
+
+              {aiDraft.provider === "ollama" ? (
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="space-y-1">
+                    <Label className="text-[11px]">آدرس Ollama</Label>
+                    <Input dir="ltr" className="num h-8 rounded-lg text-[11px]" value={aiDraft.ollamaBaseUrl} onChange={(e) => setAiDraft((d) => ({ ...d, ollamaBaseUrl: e.target.value }))} />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-[11px]">نام مدل محلی</Label>
+                    <Input dir="ltr" className="num h-8 rounded-lg text-[11px]" value={aiDraft.ollamaModel} onChange={(e) => setAiDraft((d) => ({ ...d, ollamaModel: e.target.value }))} />
+                  </div>
+                  <div dir="ltr" className="num space-y-1 rounded-xl border border-border/60 bg-secondary/30 p-3 text-left text-[11px] sm:col-span-2">
+                    <p>ollama pull qwen3:4b</p>
+                    <p>ollama serve</p>
+                  </div>
+                </div>
+              ) : (
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="space-y-1 sm:col-span-2">
+                    <Label className="text-[11px]">
+                      توکن API
+                      {aiConfig?.tokenMasked ? ` — ذخیره‌شده: ${aiConfig.tokenMasked}` : " — ذخیره‌نشده"}
+                    </Label>
+                    <Input
+                      dir="ltr"
+                      type="password"
+                      autoComplete="off"
+                      placeholder="sk-..."
+                      className="num h-8 rounded-lg text-[11px]"
+                      value={aiDraft.qwenToken}
+                      onChange={(e) => setAiDraft((d) => ({ ...d, qwenToken: e.target.value }))}
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-[11px]">مدل ابری</Label>
+                    <Input dir="ltr" className="num h-8 rounded-lg text-[11px]" value={aiDraft.qwenModel} onChange={(e) => setAiDraft((d) => ({ ...d, qwenModel: e.target.value }))} />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-[11px]">آدرس API (سازگار با OpenAI)</Label>
+                    <Input dir="ltr" className="num h-8 rounded-lg text-[11px]" value={aiDraft.qwenBaseUrl} onChange={(e) => setAiDraft((d) => ({ ...d, qwenBaseUrl: e.target.value }))} />
+                  </div>
+                  <p className="text-muted-foreground sm:col-span-2">
+                    پیش‌فرض، endpoint سازگار با OpenAIِ DashScope است (مدل‌ها: qwen-plus / qwen-turbo / qwen-max). هر endpoint سازگار با OpenAI که Qwen سرو می‌دهد قابل استفاده است.
+                  </p>
+                </div>
+              )}
+
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge className={cn("rounded-full px-3 py-1", qwenStatus?.ready ? "bg-profit/15 text-profit" : "bg-warn/15 text-warn")}>
+                  {qwenStatus
+                    ? qwenStatus.provider === "qwen-cloud"
+                      ? qwenStatus.ready
+                        ? `آماده: ${qwenStatus.model} (ابر Qwen)`
+                        : qwenStatus.reachable
+                          ? "ابر Qwen متصل؛ مدل یا توکن را بررسی کنید"
+                          : "ابر Qwen در دسترس نیست"
+                      : qwenStatus.ready
+                        ? `آماده: ${qwenStatus.model}`
+                        : qwenStatus.reachable
+                          ? `Ollama متصل؛ مدل ${qwenStatus.model} نصب نیست`
+                          : "Ollama در دسترس نیست"
+                    : "وضعیت بررسی نشده"}
                 </Badge>
                 <Button size="sm" variant="outline" className="rounded-full" onClick={() => void refreshQwenStatus()}>بررسی دوباره</Button>
-              </div>
-              <div dir="ltr" className="num space-y-1 rounded-xl border border-border/60 bg-secondary/30 p-3 text-left text-[11px]">
-                <p>ollama pull qwen3:4b</p>
-                <p>ollama serve</p>
-                <p>NITRO_OLLAMA_MODEL=qwen3:4b pnpm dev</p>
+                <Button size="sm" className="rounded-full" disabled={aiSaving} onClick={() => void saveAi()}>
+                  <Save className="ml-1 h-4 w-4" /> ذخیره تنظیمات AI
+                </Button>
               </div>
               {qwenStatus?.error ? <p className="text-loss">{qwenStatus.error}</p> : null}
-              <p className="text-muted-foreground">پس از آماده‌شدن مدل، در صفحه «فرصت‌ها» دکمه «بررسی مشورتی Qwen» فعال و قابل استفاده است. تصمیم قطعی همچنان فقط با موتور Price Action و ریسک انجام می‌شود.</p>
+              <p className="text-muted-foreground">در صفحه «فرصت‌ها» دکمه «بررسی مشورتی Qwen» از همان ارائه‌دهندهٔ انتخاب‌شده اینجا استفاده می‌کند. تصمیم قطعی همچنان فقط با موتور Price Action و ریسک انجام می‌شود.</p>
             </CardContent>
           </Card>
         </TabsContent>

@@ -1,6 +1,6 @@
 import { defineHandler } from "nitro";
 import { createError, readBody } from "nitro/h3";
-import { analyzeWithQwen, ollamaConfig } from "../../../utils/ollama";
+import { analyzeWithAi, loadAiConfig } from "../../../utils/ollama";
 import { assertSensitiveRequest } from "../../../utils/requestSecurity";
 
 interface AnalysisRequest {
@@ -50,14 +50,11 @@ export default defineHandler(async (event) => {
     },
   };
   try {
-    return await analyzeWithQwen(
-      ollamaConfig(),
-      snapshot,
-    );
+    return await analyzeWithAi(loadAiConfig(), snapshot);
   } catch (error) {
     throw createError({
       statusCode: 503,
-      statusMessage: `تحلیل Qwen در دسترس نیست: ${(error as Error).message}`,
+      statusMessage: `تحلیل AI در دسترس نیست: ${(error as Error).message}`,
     });
   }
 });
