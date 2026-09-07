@@ -26,6 +26,7 @@ import type { StrategyConfig } from "@/lib/config";
 import { cn } from "@/lib/utils";
 import { fetchAiConfig, fetchQwenStatus, saveAiConfig } from "@/lib/ai";
 import type { AiConfigView, AiProvider, QwenStatus } from "@/lib/ai";
+import { markUplinkDown, markUplinkUp } from "@/lib/engine/api";
 
 interface FieldDef {
   key: keyof StrategyConfig;
@@ -316,8 +317,13 @@ export default function SettingsPage() {
       });
       const data = (await res.json()) as { ok?: boolean; statusMessage?: string; warning?: string | null };
       if (!res.ok) {
+        if (res.status === 503) markUplinkDown(60_000, data.statusMessage ?? null);
         setKeyMsg({ ok: false, text: data.statusMessage ?? "عملیات ناموفق بود" });
         return;
+      }
+      if (enable) {
+        if (data.warning) markUplinkDown(60_000, data.warning);
+        else markUplinkUp();
       }
       setKeyMsg({
         ok: !data.warning,

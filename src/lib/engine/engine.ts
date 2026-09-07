@@ -23,7 +23,7 @@ import {
   managePosition,
   riskState,
 } from "../risk/risk";
-import { configureApi, fetchCandles, getApiLogs, onApiLog } from "./api";
+import { configureApi, fetchCandles, getApiLogs, markUplinkDown, markUplinkUp, onApiLog } from "./api";
 import { NobitexWebSocket } from "./nobitexWebSocket";
 import type { NobitexSocketState, RealtimeMarketUpdate } from "./nobitexWebSocket";
 import { formatDate } from "../format";
@@ -283,8 +283,10 @@ export class BotEngine {
         const data = await fetch("/api/account", { cache: "no-store" }).then(async (r) => {
           if (!r.ok) {
             const body = (await r.json().catch(() => null)) as { statusMessage?: string } | null;
+            if (r.status === 503) markUplinkDown(60_000, body?.statusMessage ?? null);
             throw new Error(body?.statusMessage ?? `HTTP ${r.status}`);
           }
+          markUplinkUp();
           return r.json();
         }) as NobitexAccount;
         this.account = data;

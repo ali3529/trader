@@ -20,6 +20,7 @@ import { Badge } from "@/components/ui/badge";
 import { Logo } from "@/components/brand/Logo";
 import { useEngine, useEngineState } from "@/context/BotContext";
 import { useDataSource } from "@/hooks/useDataSource";
+import { useUplink } from "@/hooks/useUplink";
 import { cn } from "@/lib/utils";
 import { formatTime } from "@/lib/format";
 
@@ -32,6 +33,30 @@ const NAV = [
   { to: "/reports", label: "گزارش‌ها", icon: FileBarChart2 },
   { to: "/settings", label: "تنظیمات", icon: Settings },
 ];
+
+/** نشان قطع اتصال حساب (موجودی/سفارش‌ها) با شمارش معکوس تا تلاش مجدد */
+function UplinkBadge() {
+  const uplink = useUplink();
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (uplink.status !== "down") return;
+    const id = setInterval(() => setTick((t) => t + 1), 1000);
+    return () => clearInterval(id);
+  }, [uplink.status]);
+  if (uplink.status !== "down") return null;
+  const secs = Math.max(0, Math.ceil((uplink.downUntil - Date.now()) / 1000));
+  return (
+    <Badge
+      className="rounded-full bg-loss/15 px-3 py-1 text-xs text-loss"
+      title={uplink.message ?? undefined}
+    >
+      <Wallet className="ml-1 h-3.5 w-3.5" />
+      {secs > 0
+        ? `اتصال حساب قطع است — تلاش مجدد تا ${secs.toLocaleString("fa-IR")} ثانیه`
+        : "اتصال حساب قطع است — در حال تلاش مجدد…"}
+    </Badge>
+  );
+}
 
 function StatusStrip() {
   const engine = useEngine();
@@ -58,6 +83,7 @@ function StatusStrip() {
           داده شبیه‌سازی‌شده — نوبیتکس در دسترس نیست
         </Badge>
       ) : null}
+      <UplinkBadge />
       <Badge variant="outline" className="rounded-full border-border/70 px-3 py-1 text-xs text-muted-foreground">
         <span className={cn("ml-1.5 inline-block h-2 w-2 rounded-full", stats.running ? "animate-pulse bg-profit" : "bg-muted-foreground/50")} />
         {stats.running ? "در حال پایش بازار" : "متوقف"}

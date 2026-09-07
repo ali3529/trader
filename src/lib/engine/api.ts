@@ -130,6 +130,39 @@ function trackSource(source?: "live" | "demo"): void {
   setDataSource(source === "demo" ? "demo" : "live");
 }
 
+/** وضعیت اتصال خصوصی (موجودی/سفارش‌ها) به نوبیتکس — مستقل از منبع دادهٔ بازار */
+export interface UplinkState {
+  status: "unknown" | "up" | "down";
+  downUntil: number;
+  message: string | null;
+}
+
+let uplink: UplinkState = { status: "unknown", downUntil: 0, message: null };
+const uplinkListeners = new Set<(u: UplinkState) => void>();
+
+export function getUplink(): UplinkState {
+  return uplink;
+}
+
+export function onUplink(fn: (u: UplinkState) => void): () => void {
+  uplinkListeners.add(fn);
+  return () => uplinkListeners.delete(fn);
+}
+
+function setUplink(next: UplinkState): void {
+  if (next.status === uplink.status && next.downUntil === uplink.downUntil && next.message === uplink.message) return;
+  uplink = next;
+  uplinkListeners.forEach((fn) => fn(uplink));
+}
+
+export function markUplinkDown(retryMs: number, message: string | null): void {
+  setUplink({ status: "down", downUntil: Date.now() + retryMs, message });
+}
+
+export function markUplinkUp(): void {
+  if (uplink.status !== "up") setUplink({ status: "up", downUntil: 0, message: null });
+}
+
 interface RawCandleArrays {
   time?: number[];
   open?: number[];

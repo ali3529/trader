@@ -155,8 +155,31 @@ export function upstreamHealthy(): boolean {
  * Circuit breaker: وقتی نوبیتکس غیرقابل دسترس است (DNS/timeout)، صف سراسری نباید
  * هر درخواست را ۱۲ ثانیه نگه دارد؛ اولین شکست شبکه مدار را ۶۰ ثانیه باز می‌کند.
  */
+let probeInFlight: Promise<Response> | null = null;
+let lastProbeAt = 0;
+const PROBE_INTERVAL_MS = 20_000;
+
 async function guardedFetch(input: string, init: RequestInit): Promise<Response> {
   if (!upstreamHealthy()) {
+    // مدار نیمه‌باز: فقط GETها هر ۲۰ ثانیه یک پروب واقعی می‌فرستند تا بازیابی
+    // اتصال زودتر از پایان پنجرهٔ ۶۰ ثانیه‌ای کشف شود؛ بقیهٔ درخواست‌ها سریع شکست می‌خورند.
+    const probeAllowed = (init.method ?? "GET") === "GET";
+    if (probeAllowed && !probeInFlight && Date.now() - lastProbeAt >= PROBE_INTERVAL_MS) {
+      lastProbeAt = Date.now();
+      probeInFlight = throttledFetch(input, init)
+        .then((res) => {
+          upstreamDownUntil = 0;
+          return res;
+        })
+        .catch((err) => {
+          upstreamDownUntil = Date.now() + CIRCUIT_OPEN_MS;
+          throw err;
+        })
+        .finally(() => {
+          probeInFlight = null;
+        });
+      return probeInFlight;
+    }
     throw new NobitexRequestError("Nobitex upstream unreachable (circuit breaker open)", 503, true);
   }
   try {
@@ -197,7 +220,7 @@ export async function publicGet(path: string, params: Record<string, string>, sa
         continue;
       }
       if (!res.ok) {
-        throw new Error(`nobitex ${res.status}: ${text.slice(0, 200)}`);
+        throw new NobitexRequestError(`nobitex ${res.status}: ${text.slice(0, 200)}`, res.status, res.status >= 500);
       }
       return JSON.parse(text);
     } catch (err) {
