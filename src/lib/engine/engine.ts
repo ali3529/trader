@@ -280,8 +280,11 @@ export class BotEngine {
     if (this.accountSyncPromise) return this.accountSyncPromise;
     this.accountSyncPromise = (async () => {
       try {
-        const data = await fetch("/api/account", { cache: "no-store" }).then((r) => {
-          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const data = await fetch("/api/account", { cache: "no-store" }).then(async (r) => {
+          if (!r.ok) {
+            const body = (await r.json().catch(() => null)) as { statusMessage?: string } | null;
+            throw new Error(body?.statusMessage ?? `HTTP ${r.status}`);
+          }
           return r.json();
         }) as NobitexAccount;
         this.account = data;

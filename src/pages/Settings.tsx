@@ -286,8 +286,8 @@ export default function SettingsPage() {
         body: JSON.stringify({ apiKey, apiSecret, sandbox, enableReal: false }),
       });
       if (!res.ok) {
-        const text = await res.text().catch(() => "");
-        setKeyMsg({ ok: false, text: `ذخیره ناموفق: ${text.slice(0, 150)}` });
+        const body = (await res.json().catch(() => null)) as { statusMessage?: string; message?: string } | null;
+        setKeyMsg({ ok: false, text: `ذخیره ناموفق: ${body?.statusMessage ?? body?.message ?? `HTTP ${res.status}`}` });
         return;
       }
       setApiKey("");

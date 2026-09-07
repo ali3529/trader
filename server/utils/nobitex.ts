@@ -1,6 +1,7 @@
 import { createCipheriv, createDecipheriv, createHash, createPrivateKey, randomBytes, sign } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync, unlinkSync, renameSync } from "node:fs";
 import { join } from "node:path";
+import { createError } from "nitro/h3";
 
 /**
  * لایه امن نوبیتکس — فقط سمت سرور.
@@ -202,12 +203,12 @@ export async function publicGet(path: string, params: Record<string, string>, sa
     } catch (err) {
       console.log(`[nobitex] GET ${url} -> FAILED in ${Date.now() - started}ms | ${errDetail(err)}`);
       lastErr = err;
-      if (err instanceof NobitexRequestError && err.statusCode === 503) throw err;
+      if (err instanceof NobitexRequestError && err.statusCode === 503) throw toHttpError(err);
       // مکث ۳۰ ثانیه‌ای فقط برای Rate Limit (429)؛ خطاهای شبکه با مکث کوتاه تلاش مجدد می‌شوند
       if (attempt < MAX_RETRIES) await sleep(1000 * attempt);
     }
   }
-  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+  throw toHttpError(lastErr);
 }
 
 /**
@@ -221,10 +222,10 @@ export async function privateRequest(
   opts: { query?: Record<string, string>; body?: unknown; retryable?: boolean } = {}
 ): Promise<unknown> {
   const keys = loadKeys();
-  if (!keys) throw new Error("کلید API ذخیره نشده است");
+  if (!keys) throw createError({ statusCode: 400, statusMessage: "کلید API ذخیره نشده است" });
   // فقط خواندن (GET) بدون فعال‌سازی معامله واقعی مجاز است؛ ارسال/لغو سفارش نیاز به تأیید روشن دارد
   if (method !== "GET" && !keys.realEnabled) {
-    throw new Error("معامله واقعی فعال نشده است (نیاز به تأیید روشن کاربر)");
+    throw createError({ statusCode: 403, statusMessage: "معامله واقعی فعال نشده است (نیاز به تأیید روشن کاربر)" });
   }
 
   const qs = opts.query
@@ -240,7 +241,11 @@ export async function privateRequest(
   // GET is idempotent. Mutating requests are never retried unless the caller
   // explicitly marks the operation idempotent (for example order cancellation).
   const canRetry = method === "GET" || opts.retryable === true;
-  decodePrivateKey(keys.apiSecret);
+  try {
+    decodePrivateKey(keys.apiSecret);
+  } catch (error) {
+    throw createError({ statusCode: 400, statusMessage: (error as Error).message });
+  }
   let lastErr: unknown;
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     const started = Date.now();
@@ -273,7 +278,9 @@ export async function privateRequest(
         const detail = String(json.detail ?? json.message ?? json.code ?? JSON.stringify(json).slice(0, 200));
         const friendly = /api key is invalid/i.test(detail)
           ? "API Key نوبیتکس معتبر نیست؛ مقدار public `key` را وارد کنید، نه User Token یا privateKey."
-          : detail;
+          : /signature/i.test(detail)
+            ? "امضای درخواست پذیرفته نشد؛ کلید خصوصی با کلید عمومی ثبت‌شده در نوبیتکس جفت نیست."
+            : detail;
         throw new NobitexRequestError(friendly, res.status || 502, res.status >= 500);
       }
       return json;
@@ -284,25 +291,65 @@ export async function privateRequest(
         !canRetry ||
         (err instanceof NobitexRequestError && (!err.retryable || err.statusCode === 503))
       ) {
-        throw err;
+        throw toHttpError(err);
       }
       // مکث ۳۰ ثانیه‌ای فقط برای Rate Limit (429)؛ خطاهای شبکه با مکث کوتاه تلاش مجدد می‌شوند
       if (attempt < MAX_RETRIES) await sleep(1000 * attempt);
     }
   }
-  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+  throw toHttpError(lastErr);
 }
 
+const PKCS8_ED25519_PREFIX = Buffer.from("302e020100300506032b657004220420", "hex");
+
+/**
+ * پذیرش کلید خصوصی Ed25519 در همه فرمت‌های رایج:
+ * Base64 / Base64url (seed یا seed+pub)، hex ۶۴/۱۲۸ کاراکتری، و PKCS#8 DER (با یا بدون PEM).
+ */
 export function decodePrivateKey(value: string): Buffer {
-  const normalized = value.trim().replace(/-/g, "+").replace(/_/g, "/");
+  const cleaned = value
+    .trim()
+    .replace(/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/gi, "")
+    .replace(/-----END [A-Z0-9 ]*PRIVATE KEY-----/gi, "")
+    .replace(/\s+/g, "");
+  if (/^[0-9a-fA-F]+$/.test(cleaned) && (cleaned.length === 64 || cleaned.length === 128)) {
+    return Buffer.from(cleaned.slice(0, 64), "hex");
+  }
+  const normalized = cleaned.replace(/-/g, "+").replace(/_/g, "/");
   const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
   const decoded = Buffer.from(padded, "base64");
   // Some exporters append the public key to the 32-byte seed.
   if (decoded.length === 64) return decoded.subarray(0, 32);
-  if (decoded.length !== 32) {
-    throw new Error("کلید خصوصی Ed25519 نوبیتکس معتبر نیست (32-byte URL-safe Base64 لازم است)");
+  if (decoded.length === 48 && decoded.subarray(0, 16).equals(PKCS8_ED25519_PREFIX)) {
+    return decoded.subarray(16);
   }
-  return decoded;
+  if (decoded.length === 32) return decoded;
+  throw new Error(
+    `کلید خصوصی Ed25519 نوبیتکس معتبر نیست؛ فرمت‌های پذیرفته‌شده: Base64 یا Base64url یا hexِ seed سی‌ودوبایته. ورودی شما ${cleaned.length} کاراکتر است — مقدار «کلید خصوصی» ساخته‌شده در نوبیتکس را وارد کنید، نه User Token یا API Key.`
+  );
+}
+
+/** تبدیل خطاهای داخلی به خطای HTTP استاندارد تا h3 آن‌ها را unhandled (500) نبیند. */
+export function toHttpError(err: unknown): Error {
+  if (err instanceof NobitexRequestError) {
+    const statusMessage =
+      err.statusCode === 503 && /circuit breaker/i.test(err.message)
+        ? "نوبیتکس موقتاً در دسترس نیست (قطع اتصال شبکه)؛ حداکثر تا یک دقیقه دیگر دوباره تلاش می‌شود."
+        : err.message;
+    return createError({
+      statusCode: err.statusCode,
+      statusMessage,
+      data: { code: "NOBITEX_ERROR", retryable: err.retryable },
+    });
+  }
+  if (err instanceof Error && typeof (err as { statusCode?: number }).statusCode === "number") {
+    return err; // قبلاً خطای h3 است
+  }
+  return createError({
+    statusCode: 503,
+    statusMessage: `دسترسی به نوبیتکس ممکن نشد: ${errDetail(err)}`,
+    data: { code: "UPSTREAM_DOWN" },
+  });
 }
 
 export function signApiRequest(

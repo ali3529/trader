@@ -1,6 +1,6 @@
 import { defineHandler } from "nitro";
 import { readBody, createError } from "nitro/h3";
-import { decodePrivateKey, loadKeys, NobitexRequestError, privateRequest, saveKeys } from "../../utils/nobitex";
+import { decodePrivateKey, loadKeys, privateRequest, saveKeys } from "../../utils/nobitex";
 import { assertSensitiveRequest } from "../../utils/requestSecurity";
 
 interface Body {
@@ -28,7 +28,7 @@ export default defineHandler(async (event) => {
     try {
       await privateRequest("GET", "/users/profile");
     } catch (error) {
-      const status = error instanceof NobitexRequestError ? error.statusCode : 0;
+      const status = (error as { statusCode?: number })?.statusCode ?? 0;
       // کلید نامعتبر = سد قطعی؛ ولی دسترس‌ناپذیری شبکه نباید فعال‌سازی محلی را ببندد
       if (status === 400 || status === 401 || status === 403) {
         throw createError({ statusCode: 401, statusMessage: `اتصال نوبیتکس تأیید نشد: ${(error as Error).message}` });
