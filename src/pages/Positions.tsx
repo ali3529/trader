@@ -109,11 +109,23 @@ export default function Positions() {
       {mode === "real" ? (
         <Card className="border-loss/30">
           <CardContent className="space-y-3 p-4">
-            <div>
-              <p className="text-sm font-bold">سفارش‌های باز واقعی نوبیتکس</p>
-              <p className="text-[11px] text-muted-foreground">
-                این فهرست مستقیماً هنگام همگام‌سازی از صرافی می‌آید و از پوزیشن‌های داخلی جداست.
-              </p>
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="text-sm font-bold">سفارش‌های باز واقعی صرافی</p>
+                <p className="text-[11px] text-muted-foreground">
+                  این فهرست مستقیماً هنگام همگام‌سازی از صرافی می‌آید و از پوزیشن‌های داخلی جداست.
+                </p>
+              </div>
+              {exchangeOrders.length ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="shrink-0 rounded-full border-loss/40 text-xs text-loss"
+                  onClick={() => void engine.cancelAllExchangeOrders()}
+                >
+                  لغو همه سفارش‌ها
+                </Button>
+              ) : null}
             </div>
             {exchangeOrders.length ? (
               <div className="space-y-2">

@@ -157,6 +157,7 @@ export default function SettingsPage() {
   const [confirmText, setConfirmText] = useState("");
   const [realDialogOpen, setRealDialogOpen] = useState(false);
   const [provider, setProvider] = useState<ExchangeProvider>("nobitex");
+  const [keyTab, setKeyTab] = useState<ExchangeProvider>("nobitex");
   const [rzApiKey, setRzApiKey] = useState("");
   const [rzSecret, setRzSecret] = useState("");
   const [rzStatus, setRzStatus] = useState<{ configured: boolean; maskedKey: string | null; realEnabled: boolean } | null>(null);
@@ -214,7 +215,10 @@ export default function SettingsPage() {
       if (status?.configured) void testConnection();
     });
     void refreshAiConfig();
-    void refreshExchangeProvider().then(setProvider);
+    void refreshExchangeProvider().then((active) => {
+      setProvider(active);
+      setKeyTab(active);
+    });
     void refreshRzKeys();
   }, []);
 
@@ -533,27 +537,57 @@ export default function SettingsPage() {
         <TabsContent value="keys" className="mt-4 space-y-4">
           <Card className="border-border/60">
             <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-bold">صرافی فعال</CardTitle>
+              <CardTitle className="text-sm font-bold">صرافی و کلیدها</CardTitle>
               <CardDescription className="text-[11px]">
-                منبع دادهٔ بازار و معامله را انتخاب کنید: نوبیتکس یا رمزینکس. با انتخاب رمزینکس، وب‌سوکت نوبیتکس خاموش
-                می‌شود و اسکن سیگنال روی کندل‌های بستهٔ REST ادامه دارد.
+                کلیدها با AES-256-GCM روی سرور رمزنگاری می‌شوند و هرگز به مرورگر یا لاگ‌ها برنمی‌گردند. سوئیچ «صرافی فعال»
+                در هر تب، منبع دادهٔ بازار و معامله را تعیین می‌کند؛ با رمزینکس، وب‌سوکت نوبیتکس خاموش می‌شود و اسکن روی
+                کندل‌های بسته ادامه دارد.
               </CardDescription>
             </CardHeader>
-            <CardContent className="space-y-3">
-              <div className="flex flex-wrap items-center gap-2">
-                <Button size="sm" variant={provider === "nobitex" ? "default" : "outline"} className="rounded-full" onClick={() => void chooseProvider("nobitex")}>
+            <CardContent className="space-y-4">
+              <div className="flex w-full max-w-xs items-center gap-1 rounded-xl border border-border/60 bg-secondary/30 p-1" role="tablist" aria-label="صرافی">
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={keyTab === "nobitex"}
+                  onClick={() => setKeyTab("nobitex")}
+                  className={cn(
+                    "flex-1 rounded-lg px-3 py-1.5 text-xs font-bold transition-colors",
+                    keyTab === "nobitex" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
+                  )}
+                >
                   نوبیتکس
-                </Button>
-                <Button size="sm" variant={provider === "ramzinex" ? "default" : "outline"} className="rounded-full" onClick={() => void chooseProvider("ramzinex")}>
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={keyTab === "ramzinex"}
+                  onClick={() => setKeyTab("ramzinex")}
+                  className={cn(
+                    "flex-1 rounded-lg px-3 py-1.5 text-xs font-bold transition-colors",
+                    keyTab === "ramzinex" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
+                  )}
+                >
                   رمزینکس
-                </Button>
-                {provider === "ramzinex" ? (
-                  <Badge className="rounded-full bg-sky-500/15 px-3 py-1 text-sky-400">داده بازار و سفارش‌ها از رمزینکس</Badge>
-                ) : null}
+                </button>
               </div>
 
-              {provider === "ramzinex" ? (
-                <>
+              {keyTab === "ramzinex" ? (
+                <div className="space-y-3">
+                  <div className="flex w-full flex-col gap-2 rounded-xl border border-border/60 bg-secondary/20 p-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="min-w-0 text-right">
+                      <p className="text-[10px] text-muted-foreground">صرافی فعال (داده بازار + معامله)</p>
+                      <p className={cn("mt-1 text-xs font-bold", provider === "ramzinex" ? "text-sky-400" : "text-muted-foreground")}>
+                        {provider === "ramzinex" ? "رمزینکس فعال است" : "غیرفعال — نوبیتکس فعال است"}
+                      </p>
+                    </div>
+                    <Switch
+                      dir="ltr"
+                      aria-label="فعال‌کردن رمزینکس به‌عنوان صرافی فعال"
+                      checked={provider === "ramzinex"}
+                      onCheckedChange={(v) => void chooseProvider(v ? "ramzinex" : "nobitex")}
+                    />
+                  </div>
                   <div className="flex flex-wrap items-center gap-2 text-xs">
                     {rzStatus?.configured ? (
                       <>
@@ -622,27 +656,29 @@ export default function SettingsPage() {
                       )
                     ) : null}
                   </div>
-                </>
-              ) : null}
-
-              {rzMsg ? (
-                <p className={cn("rounded-lg px-3 py-2 text-[11px]", rzMsg.ok ? "bg-profit/10 text-profit" : "bg-loss/10 text-loss")}>
-                  {rzMsg.text}
-                </p>
-              ) : null}
-            </CardContent>
-          </Card>
-
-          <Card className="border-border/60">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-bold">وضعیت اتصال به نوبیتکس</CardTitle>
-              <CardDescription className="text-[11px]">
-                کلیدها با AES-256-GCM روی سرور رمزنگاری می‌شوند و هرگز به مرورگر یا لاگ‌ها برنمی‌گردند.
-                کلید خود را در چت یا کد فرانت‌اند به اشتراک نگذارید؛ اگر جایی لو رفته، همان لحظه در نوبیتکس باطلش کنید.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <div className="flex flex-wrap items-center gap-2 text-xs">
+                  {rzMsg ? (
+                    <p className={cn("rounded-lg px-3 py-2 text-[11px]", rzMsg.ok ? "bg-profit/10 text-profit" : "bg-loss/10 text-loss")}>
+                      {rzMsg.text}
+                    </p>
+                  ) : null}
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <div className="flex w-full flex-col gap-2 rounded-xl border border-border/60 bg-secondary/20 p-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="min-w-0 text-right">
+                      <p className="text-[10px] text-muted-foreground">صرافی فعال (داده بازار + معامله)</p>
+                      <p className={cn("mt-1 text-xs font-bold", provider === "nobitex" ? "text-sky-400" : "text-muted-foreground")}>
+                        {provider === "nobitex" ? "نوبیتکس فعال است" : "غیرفعال — رمزینکس فعال است"}
+                      </p>
+                    </div>
+                    <Switch
+                      dir="ltr"
+                      aria-label="فعال‌کردن نوبیتکس به‌عنوان صرافی فعال"
+                      checked={provider === "nobitex"}
+                      onCheckedChange={(v) => void chooseProvider(v ? "nobitex" : "ramzinex")}
+                    />
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2 text-xs">
                 {keyStatus?.configured ? (
                   <>
                     <Badge className="rounded-full bg-profit/15 px-3 py-1 text-profit">کلید ذخیره شده: {keyStatus.maskedKey}</Badge>
@@ -707,11 +743,13 @@ export default function SettingsPage() {
                 ) : null}
               </div>
 
-              {keyMsg ? (
-                <p className={cn("rounded-lg px-3 py-2 text-[11px]", keyMsg.ok ? "bg-profit/10 text-profit" : "bg-loss/10 text-loss")}>
-                  {keyMsg.text}
-                </p>
-              ) : null}
+                  {keyMsg ? (
+                    <p className={cn("rounded-lg px-3 py-2 text-[11px]", keyMsg.ok ? "bg-profit/10 text-profit" : "bg-loss/10 text-loss")}>
+                      {keyMsg.text}
+                    </p>
+                  ) : null}
+                </div>
+              )}
             </CardContent>
           </Card>
 

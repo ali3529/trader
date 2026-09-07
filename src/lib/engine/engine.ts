@@ -26,6 +26,8 @@ import {
 import { configureApi, fetchCandles, getApiLogs, getExchangeProvider, markUplinkDown, markUplinkUp, onApiLog } from "./api";
 import { NobitexWebSocket } from "./nobitexWebSocket";
 import type { NobitexSocketState, RealtimeMarketUpdate } from "./nobitexWebSocket";
+import { RamzinexWebSocket } from "./ramzinexWebSocket";
+import type { MarketSocket, MarketSocketCallbacks } from "./ramzinexWebSocket";
 import { formatDate } from "../format";
 
 const LEGACY_STORE_KEY = "tradeban.engine.v1";
@@ -108,11 +110,11 @@ export class BotEngine {
   private accountSyncPromise: Promise<boolean> | null = null;
   private wasPrivateSocketConnected = false;
   private realtimeMarkets: Record<string, RealtimeMarketUpdate> = {};
-  private socket: NobitexWebSocket;
+  private socket: MarketSocket;
   private listeners = new Set<() => void>();
 
   constructor() {
-    this.socket = new NobitexWebSocket({
+    const callbacks: MarketSocketCallbacks = {
       onState: (state) => {
         this.websocket = state;
         this.notifyUi();
@@ -124,7 +126,10 @@ export class BotEngine {
       },
       onMarket: (update) => this.applyRealtimeMarket(update),
       onPrivateEvent: (kind, data) => this.applyPrivateEvent(kind, data),
-    });
+    };
+    // سوکت بر اساس صرافی فعال ساخته می‌شود؛ تغییر صرافی با بازنشانی صفحه اعمال می‌شود
+    this.socket =
+      getExchangeProvider() === "ramzinex" ? new RamzinexWebSocket(callbacks) : new NobitexWebSocket(callbacks);
     configureApi(this.cfg);
     this.restore();
     this.apiLogs = getApiLogs();
@@ -907,6 +912,31 @@ export class BotEngine {
       await this.syncWithExchange();
     } catch (error) {
       this.notice = `لغو سفارش ${id.toLocaleString("fa-IR")} ناموفق بود: ${(error as Error).message}`;
+      this.notify();
+    }
+  }
+
+  /** لغو دسته‌جمعی همهٔ سفارش‌های باز صرافی (رمزینکس: cancelAllOrdersId، نوبیتکس: لغو تکی) */
+  async cancelAllExchangeOrders(): Promise<void> {
+    if (this.mode !== "real") return;
+    const orders = (this.account?.openOrders ?? []) as Array<Record<string, unknown>>;
+    if (!orders.length) return;
+    const ids = orders.map((o) => Number(o.id ?? o.orderId)).filter((n) => Number.isInteger(n) && n > 0);
+    const symbols = Array.from(new Set(orders.map((o) => String(o.symbol ?? "").trim().toUpperCase()).filter(Boolean)));
+    try {
+      const response = await fetch("/api/order/all", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids, symbols }),
+      });
+      if (!response.ok) {
+        const text = await response.text().catch(() => "");
+        throw new Error(text.slice(0, 180) || `HTTP ${response.status}`);
+      }
+      this.notice = "درخواست لغو همهٔ سفارش‌های باز ارسال شد.";
+      await this.syncWithExchange();
+    } catch (error) {
+      this.notice = `لغو دسته‌جمعی سفارش‌ها ناموفق بود: ${(error as Error).message}`;
       this.notify();
     }
   }

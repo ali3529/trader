@@ -246,6 +246,16 @@ async function loadPairs(): Promise<PairsCache> {
   return pairsCache;
 }
 
+/** نگاشت کامل نماد نرمال‌شده → شناسه بازار (برای وب‌سوکت سمت کلاینت) */
+export async function getPairsMap(): Promise<Record<string, number>> {
+  const cache = await loadPairs();
+  const out: Record<string, number> = {};
+  cache.byNorm.forEach((info, normSymbol) => {
+    out[normSymbol] = info.id;
+  });
+  return out;
+}
+
 /** نگاشت نماد تریدبان (BTCIRT) به بازار رمزینکس — با fallback پسوند IRT↔IRR */
 export async function resolveMarket(symbol: string): Promise<MarketInfo> {
   const cache = await loadPairs();
@@ -434,4 +444,26 @@ export async function orderStatus(orderId: number): Promise<RzOrder> {
 /** لغو سفارش: POST /users/me/orders/{order_id}/cancel */
 export async function cancelOrder(orderId: number): Promise<void> {
   await privateRequest<unknown>("POST", `/users/me/orders/${orderId}/cancel`, { retryable: true });
+}
+
+/**
+ * لغو تمامی سفارشات یک بازار — عملیات cancelAllOrdersId در docs.ramzinex.ir.
+ * اگر endpoint لغو دسته‌جمعی پاسخ نداد، به لغو تک‌تک سفارش‌های باز همان بازار برمی‌گردیم.
+ */
+export async function cancelAllOrders(symbol: string): Promise<number> {
+  const market = await resolveMarket(symbol);
+  try {
+    await privateRequest<unknown>("POST", `/users/me/orders/${market.id}/cancelall`, { retryable: true });
+    return -1; // همه با یک درخواست لغو شدند — تعداد دقیق نامشخص
+  } catch (err) {
+    console.log(`[ramzinex] cancelall endpoint failed — falling back to per-order cancel | ${errDetail(err)}`);
+  }
+  const rows = await privateRequest<Array<Record<string, unknown>>>("POST", "/users/me/orders3", {
+    body: { offset: 0, limit: 50, states: [1], pair_id: market.id },
+  });
+  const open = (rows ?? [])
+    .map((item) => normalizeOrder(item as Record<string, unknown>))
+    .filter((o) => o.pairId === market.id && o.statusId === 1);
+  for (const order of open) await cancelOrder(order.id);
+  return open.length;
 }
