@@ -163,7 +163,7 @@ export default function Opportunities() {
                         <p className="mt-2 text-muted-foreground">این خروجی سیگنال یا مجوز معامله نیست و هیچ سفارشی ارسال نمی‌کند.</p>
                       </div>
                     ) : aiErrors[scan.symbol] ? (
-                      <p className="mt-3 rounded-lg bg-loss/10 px-3 py-2 text-[11px] text-loss">Qwen در دسترس نیست: {aiErrors[scan.symbol]}</p>
+                      <p className="mt-3 rounded-lg bg-loss/10 px-3 py-2 text-[11px] text-loss">تحلیل مشورتی ناموفق: {aiErrors[scan.symbol]}</p>
                     ) : null}
 
                     <button

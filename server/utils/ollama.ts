@@ -115,22 +115,38 @@ const SYSTEM_PROMPT = [
   "فقط داده‌های ارسالی را تفسیر کنید؛ قواعد قطعی استراتژی و ریسک قرار نیست بدهید.",
 ].join(" ");
 
+/** مدل‌ها گاهی JSON را داخل ```json fence یا همراه متن اضافه برمی‌گردانند */
+function extractJson(raw: string): string {
+  const trimmed = raw.trim();
+  const unfenced = trimmed.replace(/^```[a-zA-Z]*\s*/, "").replace(/\s*```$/, "");
+  const start = unfenced.indexOf("{");
+  const end = unfenced.lastIndexOf("}");
+  if (start === -1 || end <= start) return unfenced;
+  return unfenced.slice(start, end + 1);
+}
+
+/** تحمل‌پذیر نسبت به خروجی مدل: انواع را coerce می‌کند به‌جای رد کردن کل پاسخ */
 function normalizeAnalysis(parsed: Partial<QwenAnalysis>): QwenAnalysis {
-  if (
-    typeof parsed.summary !== "string" ||
-    !["support", "neutral", "caution"].includes(String(parsed.verdict)) ||
-    typeof parsed.confidence !== "number" ||
-    !Array.isArray(parsed.observations) ||
-    !Array.isArray(parsed.risks)
-  ) {
-    throw new Error("ساختار پاسخ مدل معتبر نیست");
-  }
+  const summary = typeof parsed.summary === "string" ? parsed.summary.trim() : "";
+  if (!summary) throw new Error("پاسخ مدل خلاصه (summary) نداشت");
+  const verdictRaw = String(parsed.verdict ?? "").toLowerCase();
+  const verdict: QwenAnalysis["verdict"] = (["support", "neutral", "caution"] as const).includes(
+    verdictRaw as QwenAnalysis["verdict"]
+  )
+    ? (verdictRaw as QwenAnalysis["verdict"])
+    : "neutral";
+  const confidenceRaw = Number(parsed.confidence);
+  const confidence = Number.isFinite(confidenceRaw) ? Math.max(0, Math.min(100, confidenceRaw)) : 50;
+  const asStrings = (value: unknown): string[] =>
+    Array.isArray(value)
+      ? value.map((x) => String(x).trim()).filter((s) => s.length > 0).slice(0, 4)
+      : [];
   return {
-    summary: parsed.summary.slice(0, 800),
-    verdict: parsed.verdict as QwenAnalysis["verdict"],
-    confidence: Math.max(0, Math.min(100, parsed.confidence)),
-    observations: parsed.observations.filter((x): x is string => typeof x === "string").slice(0, 4),
-    risks: parsed.risks.filter((x): x is string => typeof x === "string").slice(0, 4),
+    summary: summary.slice(0, 800),
+    verdict,
+    confidence,
+    observations: asStrings(parsed.observations),
+    risks: asStrings(parsed.risks),
   };
 }
 
@@ -175,7 +191,7 @@ async function analyzeWithOllama(
   const body = (await response.json()) as { message?: { content?: string } };
   const raw = body.message?.content;
   if (!raw) throw new Error("پاسخ Ollama خالی بود");
-  return normalizeAnalysis(JSON.parse(raw) as Partial<QwenAnalysis>);
+  return normalizeAnalysis(JSON.parse(extractJson(raw)) as Partial<QwenAnalysis>);
 }
 
 async function analyzeWithQwenCloud(
@@ -201,7 +217,10 @@ async function analyzeWithQwenCloud(
     }),
   });
   if (response.status === 401 || response.status === 403) {
-    throw new Error("توکن Qwen معتبر نیست (401/403)");
+    throw new Error("توکن Qwen معتبر نیست (401/403) — توکن همان منطقه (intl یا چین) را در تنظیمات ذخیره کنید");
+  }
+  if (response.status === 404) {
+    throw new Error("مسیر یا مدل پیدا نشد (404) — base url و نام مدل را در تنظیمات بررسی کنید");
   }
   if (!response.ok) {
     const text = await response.text().catch(() => "");
@@ -212,7 +231,7 @@ async function analyzeWithQwenCloud(
   };
   const raw = body.choices?.[0]?.message?.content;
   if (!raw) throw new Error("پاسخ Qwen خالی بود");
-  return normalizeAnalysis(JSON.parse(raw) as Partial<QwenAnalysis>);
+  return normalizeAnalysis(JSON.parse(extractJson(raw)) as Partial<QwenAnalysis>);
 }
 
 /** تحلیل مشورتی snapshot سیگنال با ارائه‌دهندهٔ انتخاب‌شده در تنظیمات */
@@ -220,11 +239,25 @@ export async function analyzeWithAi(
   config: AiConfig,
   marketSnapshot: Record<string, unknown>,
 ): Promise<QwenAnalysis> {
-  if (config.provider === "qwen-cloud") {
-    return analyzeWithQwenCloud(config, marketSnapshot);
+  const label =
+    config.provider === "qwen-cloud"
+      ? `Qwen ابری (${config.qwenModel})`
+      : `Ollama (${config.ollamaModel})`;
+  try {
+    if (config.provider === "qwen-cloud") {
+      return await analyzeWithQwenCloud(config, marketSnapshot);
+    }
+    return await analyzeWithOllama(
+      { baseUrl: config.ollamaBaseUrl, model: config.ollamaModel },
+      marketSnapshot,
+    );
+  } catch (error) {
+    const message = (error as Error).message;
+    if (config.provider === "ollama" && /fetch failed|ECONNREFUSED|aborted|timeout/i.test(message)) {
+      throw new Error(
+        `Ollama روی این دستگاه در دسترس نیست (مدل ${config.ollamaModel}) — یا سرویس Ollama اجرا نیست یا مدل نصب نیست؛ در تنظیمات → AI ارائه‌دهنده را روی «Qwen ابری» بگذارید یا Ollama را شروع کنید.`
+      );
+    }
+    throw new Error(`${label}: ${message}`);
   }
-  return analyzeWithOllama(
-    { baseUrl: config.ollamaBaseUrl, model: config.ollamaModel },
-    marketSnapshot,
-  );
 }
