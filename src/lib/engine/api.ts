@@ -130,28 +130,90 @@ function trackSource(source?: "live" | "demo"): void {
   setDataSource(source === "demo" ? "demo" : "live");
 }
 
-/** دریافت کندل‌ها از پروکسی سرور (کلیدها هرگز در فرانت‌اند نیستند) */
+interface RawCandleArrays {
+  time?: number[];
+  open?: number[];
+  high?: number[];
+  low?: number[];
+  close?: number[];
+  volume?: number[];
+}
+
+const toCandles = (d: RawCandleArrays, timeInMs: boolean): Candle[] => {
+  const out: Candle[] = (d.time ?? []).map((t, i) => ({
+    time: timeInMs ? t : t * 1000,
+    open: d.open?.[i] ?? 0,
+    high: d.high?.[i] ?? 0,
+    low: d.low?.[i] ?? 0,
+    close: d.close?.[i] ?? 0,
+    volume: d.volume?.[i] ?? 0,
+  }));
+  return out.sort((a, b) => a.time - b.time);
+};
+
+/**
+ * تلاش مستقیم مرورگر → API عمومی نوبیتکس (بدون کلید؛ فقط endpointهای عمومی).
+ * چرا؟ سرور پیش‌نمایش به دامنهٔ نوبیتکس دسترسی ندارد ولی مرورگر کاربر ممکن است داشته باشد؛
+ * پس تاریخچهٔ واقعی هم‌منبع با وب‌سوکت می‌شود. اگر CORS/شبکه اجازه نداد، فقط یک‌بار
+ * لاگ می‌شود و بقیهٔ جلسه از پروکسی سرور استفاده می‌شود. کلیدها هرگز در فرانت‌اند نیستند.
+ */
+const NOBITEX_PUBLIC_BASE = "https://api.nobitex.ir";
+let directRestWorks: boolean | null = null;
+
+async function tryDirectJson<T>(url: string): Promise<T | null> {
+  if (directRestWorks === false) return null;
+  try {
+    const res = await fetch(url, { headers: { Accept: "application/json" }, cache: "no-store" });
+    if (!res.ok) return null;
+    directRestWorks = true;
+    return (await res.json()) as T;
+  } catch (error) {
+    directRestWorks = false;
+    console.info(
+      "[nobitex-rest] direct browser→Nobitex blocked (CORS or network) — falling back to server proxy.",
+      String((error as Error)?.message ?? error)
+    );
+    return null;
+  }
+}
+
+const toNums = (rows: (string | number)[][] | undefined) =>
+  (rows ?? []).map((r) => [Number(r[0]), Number(r[1])]);
+
+/** دریافت کندل‌ها: اول مستقیم از نوبیتکس (مرورگر)، در نبود آن پروکسی سرور */
 export async function fetchCandles(
   symbol: string,
   resolution: string,
   from: number,
   to: number
 ): Promise<Candle[]> {
+  const direct = await enqueue(() =>
+    tryDirectJson<RawCandleArrays[] | RawCandleArrays>(
+      `${NOBITEX_PUBLIC_BASE}/market/candlestore/light?symbol=${encodeURIComponent(symbol)}&resolution=${encodeURIComponent(resolution)}&from=${Math.floor(from / 1000)}&to=${Math.floor(to / 1000)}`
+    )
+  );
+  if (direct) {
+    trackSource("live");
+    const d = Array.isArray(direct) ? (direct[0] ?? {}) : direct;
+    return toCandles(d, false);
+  }
   const qs = new URLSearchParams({ symbol, resolution, from: String(from), to: String(to) });
   const data = await apiGet<NobitexCandleResponse>(`/api/market/candles?${qs}`);
   trackSource(data.source);
-  const out: Candle[] = (data.time ?? []).map((t, i) => ({
-    time: t,
-    open: data.open[i],
-    high: data.high[i],
-    low: data.low[i],
-    close: data.close[i],
-    volume: data.volume[i],
-  }));
-  return out.sort((a, b) => a.time - b.time);
+  return toCandles(data, true);
 }
 
+/** دفتر سفارش‌ها: اول مستقیم (v3)، در نبود آن پروکسی سرور */
 export async function fetchOrderBook(symbol: string): Promise<{ asks: number[][]; bids: number[][] }> {
+  const direct = await enqueue(() =>
+    tryDirectJson<{ asks?: (string | number)[][]; bids?: (string | number)[][] }>(
+      `${NOBITEX_PUBLIC_BASE}/v3/orderbook/${encodeURIComponent(symbol)}`
+    )
+  );
+  if (direct) {
+    trackSource("live");
+    return { asks: toNums(direct.asks), bids: toNums(direct.bids) };
+  }
   const data = await apiGet<{ asks: number[][]; bids: number[][]; source?: "live" | "demo" }>(
     `/api/market/orderbook?symbol=${encodeURIComponent(symbol)}`
   );

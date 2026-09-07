@@ -138,11 +138,13 @@ export class NobitexWebSocket {
 
     this.privateEnabled = config.privateEnabled;
     this.authParam = config.websocketAuthParam;
+    console.info(`[nobitex-ws] opening ${config.wsUrl} (private:${config.privateEnabled})`);
     const socket = new WebSocket(config.wsUrl || PROD_WS);
     this.socket = socket;
 
     socket.onopen = () => {
       if (this.socket !== socket) return;
+      console.info("[nobitex-ws] tcp/tls open — sending connect command");
       socket.send(JSON.stringify({ id: 1, connect: config.token ? { token: config.token } : {} }));
     };
     socket.onmessage = (event) => {
@@ -151,10 +153,12 @@ export class NobitexWebSocket {
     };
     socket.onerror = () => {
       if (this.socket !== socket) return;
+      console.info("[nobitex-ws] socket error event (network/DNS/origin block?)");
       this.setState({ status: "error", error: "خطای اتصال WebSocket نوبیتکس" });
     };
-    socket.onclose = () => {
+    socket.onclose = (event) => {
       if (this.socket !== socket) return;
+      console.info(`[nobitex-ws] closed code=${event.code} reason=${event.reason || "—"}`);
       this.socket = null;
       this.clearRefreshTimer();
       if (!this.stopped) this.scheduleReconnect();
@@ -260,7 +264,13 @@ export class NobitexWebSocket {
   }
 
   private setState(patch: Partial<NobitexSocketState>): void {
+    const previous = this.state;
     this.state = { ...this.state, ...patch };
+    if (this.state.status !== previous.status || this.state.error !== previous.error) {
+      console.info(
+        `[nobitex-ws] status: ${previous.status} → ${this.state.status}${this.state.error ? ` | ${this.state.error}` : ""}`,
+      );
+    }
     this.callbacks.onState({ ...this.state });
   }
 

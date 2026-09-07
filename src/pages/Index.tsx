@@ -24,6 +24,26 @@ import { lastAtr } from "@/lib/strategy/indicators";
 import type { Candle } from "@/lib/types";
 import { formatDuration, formatPct, formatPrice, formatToman, symbolLabel } from "@/lib/format";
 
+/** کندل جاری (بسته‌نشده) را با قیمت زندهٔ وب‌سوکت به‌روز می‌کند یا می‌سازد */
+function withLiveCandle(prev: Candle[], price: number, resolutionMs: number): Candle[] {
+  if (!prev.length || !Number.isFinite(price) || price <= 0) return prev;
+  const bucket = Math.floor(Date.now() / resolutionMs) * resolutionMs;
+  const last = prev[prev.length - 1];
+  if (last.time === bucket) {
+    const updated: Candle = {
+      ...last,
+      close: price,
+      high: Math.max(last.high, price),
+      low: Math.min(last.low, price),
+    };
+    return [...prev.slice(0, -1), updated];
+  }
+  if (last.time < bucket) {
+    return [...prev, { time: bucket, open: price, high: price, low: price, close: price, volume: 0 }];
+  }
+  return prev;
+}
+
 export default function Dashboard() {
   const engine = useEngine();
   const stats = useEngineState((e) => e.stats());
@@ -40,7 +60,9 @@ export default function Dashboard() {
 
   const [chartSymbol, setChartSymbol] = useState(symbols[0] ?? "BTCIRT");
   const [candles, setCandles] = useState<Candle[]>([]);
+  const [candlesSymbol, setCandlesSymbol] = useState("");
   const [chartLoading, setChartLoading] = useState(false);
+  const livePrice = useEngineState((e) => e.scans[chartSymbol]?.lastPrice ?? 0);
 
   useEffect(() => {
     if (!symbols.includes(chartSymbol) && symbols.length) setChartSymbol(symbols[0]);
@@ -52,7 +74,10 @@ export default function Dashboard() {
     const to = Date.now();
     fetchCandles(chartSymbol, "3600", to - 200 * 3_600_000, to)
       .then((c) => {
-        if (alive) setCandles(c.filter((x) => x.time <= to - 3_600_000));
+        if (alive) {
+          setCandles(c.filter((x) => x.time <= to - 3_600_000));
+          setCandlesSymbol(chartSymbol);
+        }
       })
       .catch(() => {
         if (alive) setCandles([]);
@@ -64,6 +89,12 @@ export default function Dashboard() {
       alive = false;
     };
   }, [chartSymbol, stats.lastTick]);
+
+  // کندل در حال تشکیل از قیمت زندهٔ وب‌سوکت — بین دو بررسی REST چارت زنده می‌ماند
+  useEffect(() => {
+    if (candlesSymbol !== chartSymbol) return;
+    setCandles((prev) => withLiveCandle(prev, livePrice, 3_600_000));
+  }, [livePrice, chartSymbol, candlesSymbol]);
 
   const chartLevels = useMemo(() => {
     if (candles.length < 60) return [];
