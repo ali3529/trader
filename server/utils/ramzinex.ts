@@ -218,10 +218,40 @@ interface PairsCache {
   at: number;
   byNorm: Map<string, MarketInfo>;
   byId: Map<number, string>;
+  sample: unknown[];
 }
 
 let pairsCache: PairsCache | null = null;
 const norm = (s: string): string => s.toUpperCase().replace(/[^A-Z0-9]/g, "");
+
+/** رمزینکس نماد را در قالب‌های متفاوت می‌فرستد (رشته، شیء base/quote و…)؛ همه را پوشش می‌دهیم */
+function extractPairSymbol(item: Record<string, unknown>): string {
+  const stringFields = [item.symbol, item.name, item.pair, item.title, item.market, item.slug];
+  for (const value of stringFields) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  const baseKeys = ["base", "baseSymbol", "baseCurrency", "baseAsset", "from", "currency"];
+  const quoteKeys = ["quote", "quoteSymbol", "quoteCurrency", "quoteAsset", "to"];
+  const pick = (obj: Record<string, unknown>, keys: string[]): string => {
+    for (const key of keys) {
+      const value = obj[key];
+      if (typeof value === "string" && value.trim()) return value.trim();
+    }
+    return "";
+  };
+  const symbolObj = typeof item.symbol === "object" && item.symbol !== null ? (item.symbol as Record<string, unknown>) : null;
+  if (symbolObj) {
+    const flat = pick(symbolObj, ["value", "name", "symbol", "title"]);
+    if (flat) return flat;
+    const base = pick(symbolObj, baseKeys);
+    const quote = pick(symbolObj, quoteKeys);
+    if (base && quote) return `${base}${quote}`;
+  }
+  const base = pick(item, baseKeys);
+  const quote = pick(item, quoteKeys);
+  if (base && quote) return `${base}${quote}`;
+  return "";
+}
 
 async function loadPairs(): Promise<PairsCache> {
   if (pairsCache && Date.now() - pairsCache.at < 10 * 60_000) return pairsCache;
@@ -236,14 +266,20 @@ async function loadPairs(): Promise<PairsCache> {
   const byId = new Map<number, string>();
   for (const item of pairs ?? []) {
     const id = Number(item.id ?? item.pair_id);
-    const symbol = String(item.symbol ?? item.name ?? item.pair ?? "");
-    if (!Number.isInteger(id) || id <= 0 || !symbol) continue;
-    byNorm.set(norm(symbol), { id, symbol });
-    byId.set(id, norm(symbol));
+    const symbol = extractPairSymbol(item);
+    const key = norm(symbol);
+    if (!Number.isInteger(id) || id <= 0 || !key) continue;
+    byNorm.set(key, { id, symbol });
+    byId.set(id, key);
   }
   if (!byNorm.size) throw new RamzinexError("فهرست بازارهای رمزینکس خالی است", 502);
-  pairsCache = { at: Date.now(), byNorm, byId };
+  pairsCache = { at: Date.now(), byNorm, byId, sample: pairs.slice(0, 3) };
   return pairsCache;
+}
+
+/** نمونهٔ خام آیتم‌های pairs — فقط برای تشخیص قالب وقتی نگاشت خراب است */
+export function getPairsSample(): unknown[] {
+  return pairsCache?.sample ?? [];
 }
 
 /** نگاشت کامل نماد نرمال‌شده → شناسه بازار (برای وب‌سوکت سمت کلاینت) */
