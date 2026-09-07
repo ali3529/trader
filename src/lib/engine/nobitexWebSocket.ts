@@ -31,6 +31,14 @@ interface SocketCallbacks {
 
 const PROD_WS = "wss://ws.nobitex.ir/connection/websocket";
 const TESTNET_WS = "wss://testnetws.nobitex.ir/connection/websocket";
+const CONFIG_BUDGET_MS = 8_000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error("ws-config timeout")), ms)),
+  ]);
+}
 
 /**
  * Minimal Centrifugo JSON-protocol client. We intentionally do not request
@@ -111,7 +119,19 @@ export class NobitexWebSocket {
         websocketAuthParam: null,
       };
     }
-    const response = await fetch("/api/nobitex/ws-config", { cache: "no-store" });
+    // سوکت هرگز نباید معطل اعتبارنامهٔ خصوصی بماند: بودجهٔ ۸ ثانیه، بعد فقط جریان عمومی
+    let response: Response;
+    try {
+      response = await withTimeout(fetch("/api/nobitex/ws-config", { cache: "no-store" }), CONFIG_BUDGET_MS);
+    } catch {
+      console.info("[nobitex-ws] ws-config slow/unavailable — connecting public-only");
+      return {
+        wsUrl: sandbox ? TESTNET_WS : PROD_WS,
+        privateEnabled: false,
+        token: null,
+        websocketAuthParam: null,
+      };
+    }
     if (!response.ok) {
       const body = await response.json().catch(() => null) as { statusMessage?: string; message?: string } | null;
       throw new Error(body?.statusMessage ?? body?.message ?? `HTTP ${response.status}`);

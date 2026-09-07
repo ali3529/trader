@@ -157,24 +157,58 @@ const toCandles = (d: RawCandleArrays, timeInMs: boolean): Candle[] => {
  * پس تاریخچهٔ واقعی هم‌منبع با وب‌سوکت می‌شود. اگر CORS/شبکه اجازه نداد، فقط یک‌بار
  * لاگ می‌شود و بقیهٔ جلسه از پروکسی سرور استفاده می‌شود. کلیدها هرگز در فرانت‌اند نیستند.
  */
-const NOBITEX_PUBLIC_BASE = "https://api.nobitex.ir";
+const DIRECT_BASES = ["https://apiv2.nobitex.ir", "https://api.nobitex.ir"];
+let directBaseIndex: number | null = null;
 let directRestWorks: boolean | null = null;
 
-async function tryDirectJson<T>(url: string): Promise<T | null> {
+/**
+ * api.nobitex.ir از DNS حذف شده (ERR_NAME_NOT_RESOLVED)؛ پس اول apiv2 تلاش می‌شود.
+ * پایهٔ موفق برای بقیهٔ جلسه به خاطر سپرده می‌شود.
+ */
+async function tryDirectJson<T>(buildUrl: (base: string) => string): Promise<T | null> {
   if (directRestWorks === false) return null;
-  try {
-    const res = await fetch(url, { headers: { Accept: "application/json" }, cache: "no-store" });
-    if (!res.ok) return null;
-    directRestWorks = true;
-    return (await res.json()) as T;
-  } catch (error) {
-    directRestWorks = false;
-    console.info(
-      "[nobitex-rest] direct browser→Nobitex blocked (CORS or network) — falling back to server proxy.",
-      String((error as Error)?.message ?? error)
-    );
-    return null;
+  const order =
+    directBaseIndex === null ? [0, 1] : [directBaseIndex, 1 - directBaseIndex];
+  for (const index of order) {
+    try {
+      const res = await fetch(buildUrl(DIRECT_BASES[index]), {
+        headers: { Accept: "application/json" },
+        cache: "no-store",
+      });
+      if (!res.ok) continue;
+      directBaseIndex = index;
+      directRestWorks = true;
+      return (await res.json()) as T;
+    } catch {
+      // خطای DNS/CORS روی این پایه — پایهٔ بعدی تلاش می‌شود
+    }
   }
+  directRestWorks = false;
+  console.info(
+    "[nobitex-rest] direct browser→Nobitex blocked (CORS or network) — falling back to server proxy."
+  );
+  return null;
+}
+
+interface UdfHistory {
+  s?: string;
+  t?: number[];
+  o?: number[];
+  h?: number[];
+  l?: number[];
+  c?: number[];
+  v?: number[];
+}
+
+/** رزولوشن UDF برحسب دقیقه است؛ فراخوان ممکن است ثانیه (3600) یا دقیقه (60) بفرستد. */
+function udfResolution(resolution: string): string {
+  const value = Number(resolution);
+  const minutes = value >= 60 ? value / 60 : value;
+  const allowed = [15, 60, 240];
+  const nearest = allowed.reduce((best, m) =>
+    Math.abs(m - minutes) < Math.abs(best - minutes) ? m : best
+  );
+  return String(nearest);
 }
 
 const toNums = (rows: (string | number)[][] | undefined) =>
@@ -188,13 +222,21 @@ export async function fetchCandles(
   to: number
 ): Promise<Candle[]> {
   const direct = await enqueue(() =>
-    tryDirectJson<RawCandleArrays[] | RawCandleArrays>(
-      `${NOBITEX_PUBLIC_BASE}/market/candlestore/light?symbol=${encodeURIComponent(symbol)}&resolution=${encodeURIComponent(resolution)}&from=${Math.floor(from / 1000)}&to=${Math.floor(to / 1000)}`
+    tryDirectJson<UdfHistory | RawCandleArrays[] | RawCandleArrays>((base) =>
+      `${base}/market/udf/history?symbol=${encodeURIComponent(symbol)}&resolution=${udfResolution(resolution)}&from=${Math.floor(from / 1000)}&to=${Math.floor(to / 1000)}`
     )
   );
   if (direct) {
     trackSource("live");
-    const d = Array.isArray(direct) ? (direct[0] ?? {}) : direct;
+    let d: RawCandleArrays;
+    if (Array.isArray(direct)) {
+      d = direct[0] ?? {};
+    } else {
+      const udf = direct as UdfHistory;
+      d = udf.t
+        ? { time: udf.t, open: udf.o, high: udf.h, low: udf.l, close: udf.c, volume: udf.v }
+        : (direct as RawCandleArrays);
+    }
     return toCandles(d, false);
   }
   const qs = new URLSearchParams({ symbol, resolution, from: String(from), to: String(to) });
@@ -207,7 +249,7 @@ export async function fetchCandles(
 export async function fetchOrderBook(symbol: string): Promise<{ asks: number[][]; bids: number[][] }> {
   const direct = await enqueue(() =>
     tryDirectJson<{ asks?: (string | number)[][]; bids?: (string | number)[][] }>(
-      `${NOBITEX_PUBLIC_BASE}/v3/orderbook/${encodeURIComponent(symbol)}`
+      (base) => `${base}/v3/orderbook/${encodeURIComponent(symbol)}`
     )
   );
   if (direct) {

@@ -142,6 +142,33 @@ function throttledFetch(input: string, init: RequestInit): Promise<Response> {
   return run;
 }
 
+let upstreamDownUntil = 0;
+const CIRCUIT_OPEN_MS = 60_000;
+
+/** آیا بالادست در دسترس است؟ پس از خطای شبکه، تا ۶۰ ثانیه درخواست‌ها سریع شکست می‌خورند. */
+export function upstreamHealthy(): boolean {
+  return Date.now() >= upstreamDownUntil;
+}
+
+/**
+ * Circuit breaker: وقتی نوبیتکس غیرقابل دسترس است (DNS/timeout)، صف سراسری نباید
+ * هر درخواست را ۱۲ ثانیه نگه دارد؛ اولین شکست شبکه مدار را ۶۰ ثانیه باز می‌کند.
+ */
+async function guardedFetch(input: string, init: RequestInit): Promise<Response> {
+  if (!upstreamHealthy()) {
+    throw new NobitexRequestError("Nobitex upstream unreachable (circuit breaker open)", 503, true);
+  }
+  try {
+    const res = await throttledFetch(input, init);
+    upstreamDownUntil = 0;
+    return res;
+  } catch (err) {
+    if (err instanceof NobitexRequestError) throw err;
+    upstreamDownUntil = Date.now() + CIRCUIT_OPEN_MS;
+    throw err;
+  }
+}
+
 const errDetail = (err: unknown): string => {
   const e = err as Error & { cause?: { code?: string; message?: string } };
   const cause = e?.cause?.code ?? e?.cause?.message;
@@ -156,7 +183,7 @@ export async function publicGet(path: string, params: Record<string, string>, sa
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     const started = Date.now();
     try {
-      const res = await throttledFetch(url, {
+      const res = await guardedFetch(url, {
         headers: { Accept: "application/json", "User-Agent": "TraderBot/Tradeban" },
         signal: AbortSignal.timeout(12_000),
       });
@@ -175,6 +202,7 @@ export async function publicGet(path: string, params: Record<string, string>, sa
     } catch (err) {
       console.log(`[nobitex] GET ${url} -> FAILED in ${Date.now() - started}ms | ${errDetail(err)}`);
       lastErr = err;
+      if (err instanceof NobitexRequestError && err.statusCode === 503) throw err;
       // مکث ۳۰ ثانیه‌ای فقط برای Rate Limit (429)؛ خطاهای شبکه با مکث کوتاه تلاش مجدد می‌شوند
       if (attempt < MAX_RETRIES) await sleep(1000 * attempt);
     }
@@ -219,7 +247,7 @@ export async function privateRequest(
     const timestamp = Math.floor(Date.now() / 1000).toString();
     const signatureUrlSafe = signApiRequest(keys.apiSecret, timestamp, method, fullPath, bodyStr);
     try {
-      const res = await throttledFetch(url, {
+      const res = await guardedFetch(url, {
         method,
         headers: {
           "Content-Type": "application/json",
@@ -252,7 +280,12 @@ export async function privateRequest(
     } catch (err) {
       console.log(`[nobitex] ${method} ${url} -> FAILED in ${Date.now() - started}ms | ${errDetail(err)}`);
       lastErr = err;
-      if (!canRetry || (err instanceof NobitexRequestError && !err.retryable)) throw err;
+      if (
+        !canRetry ||
+        (err instanceof NobitexRequestError && (!err.retryable || err.statusCode === 503))
+      ) {
+        throw err;
+      }
       // مکث ۳۰ ثانیه‌ای فقط برای Rate Limit (429)؛ خطاهای شبکه با مکث کوتاه تلاش مجدد می‌شوند
       if (attempt < MAX_RETRIES) await sleep(1000 * attempt);
     }
