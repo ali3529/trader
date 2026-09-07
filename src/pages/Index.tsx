@@ -18,7 +18,7 @@ import { StatCard } from "@/components/StatCard";
 import { EquityChart } from "@/components/EquityChart";
 import { CandleChart } from "@/components/CandleChart";
 import { useEngine, useEngineState } from "@/context/BotContext";
-import { fetchCandles } from "@/lib/engine/api";
+import { fetchCandles, getExchangeProvider } from "@/lib/engine/api";
 import { allLevels } from "@/lib/strategy/levels";
 import { lastAtr } from "@/lib/strategy/indicators";
 import type { Candle } from "@/lib/types";
@@ -57,6 +57,7 @@ export default function Dashboard() {
     openOrderCount: e.account.openOrders.length,
     equityToman: e.nobitexEquityToman(),
   } : null);
+  const exchangeName = getExchangeProvider() === "ramzinex" ? "رمزینکس" : "نوبیتکس";
 
   const [chartSymbol, setChartSymbol] = useState(symbols[0] ?? "BTCIRT");
   const [candles, setCandles] = useState<Candle[]>([]);
@@ -116,7 +117,7 @@ export default function Dashboard() {
         <CardContent className="relative space-y-3 p-5">
           <div className="flex flex-wrap items-end justify-between gap-3">
             <div>
-              <p className="text-xs text-muted-foreground">{account ? "موجودی کل حساب نوبیتکس" : `سرمایه جاری (${stats.mode === "real" ? "واقعی" : "پولی"})`}</p>
+              <p className="text-xs text-muted-foreground">{account ? `موجودی کل حساب ${exchangeName}` : `سرمایه جاری (${stats.mode === "real" ? "واقعی" : "پولی"})`}</p>
               <p className="num text-2xl font-extrabold text-foreground md:text-3xl">{formatToman(displayedCapital)}</p>
               {account && stats.mode === "paper" ? (
                 <p className="mt-1 text-[11px] text-muted-foreground">سرمایه Paper Trading: <span className="num">{formatToman(engine.currentEquity())}</span></p>
@@ -187,7 +188,7 @@ export default function Dashboard() {
           <CardContent>
             {chartLoading && !candles.length ? (
               <div className="flex h-[460px] items-center justify-center text-xs text-muted-foreground">
-                در حال دریافت داده از نوبیتکس… (به دلیل رعایت فاصله ۱۲ ثانیه‌ای ممکن است کمی طول بکشد)
+                در حال دریافت داده از {exchangeName}… (به دلیل رعایت فاصله ۱۲ ثانیه‌ای ممکن است کمی طول بکشد)
               </div>
             ) : candles.length ? (
               <CandleChart

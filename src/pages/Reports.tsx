@@ -124,7 +124,7 @@ export default function Reports() {
               </Table>
             </div>
           ) : (
-            <p className="py-10 text-center text-xs text-muted-foreground">هنوز درخواستی به API نوبیتکس ارسال نشده است.</p>
+            <p className="py-10 text-center text-xs text-muted-foreground">هنوز درخواستی به API صرافی ارسال نشده است.</p>
           )}
         </CardContent>
       </Card>

@@ -339,7 +339,8 @@ export class BotEngine {
           this.reconcileRealPositions();
           this.revalueRealCash();
         }
-        this.notice = `همگام‌سازی با نوبیتکس انجام شد — ${Object.keys(data.totalBalances ?? data.balances ?? {}).length} موجودی و ${data.openOrders?.length ?? 0} سفارش باز مشاهده شد.`;
+        const exchangeName = getExchangeProvider() === "ramzinex" ? "رمزینکس" : "نوبیتکس";
+        this.notice = `همگام‌سازی با ${exchangeName} انجام شد — ${Object.keys(data.totalBalances ?? data.balances ?? {}).length} موجودی و ${data.openOrders?.length ?? 0} سفارش باز مشاهده شد.`;
         this.notify();
         return true;
       } catch (err) {
@@ -418,7 +419,7 @@ export class BotEngine {
           qty: record.filledQty,
           price: record.averagePrice,
           time: record.createdAt,
-          reason: record.reason || "خروج همگام‌شده از نوبیتکس",
+          reason: record.reason || `خروج همگام‌شده از ${getExchangeProvider() === "ramzinex" ? "رمزینکس" : "نوبیتکس"}`,
           pnl: (record.averagePrice - entry) * record.filledQty - fee,
           fee,
         };
