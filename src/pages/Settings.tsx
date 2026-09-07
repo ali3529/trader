@@ -33,7 +33,7 @@ import type { ExchangeProvider } from "@/lib/engine/api";
 function describeSaveError(status: number, statusMessage?: string | null): string {
   if (statusMessage) return statusMessage;
   if (status === 401) {
-    return "احراز هویت الزامی است — در پنجرهٔ احراز هویت مرورگر، کاربر و رمز TRADEBAN_BASIC_AUTH را وارد کنید.";
+    return "احراز هویت الزامی است — در پنجرهٔ ورودی که باز می‌شود، کاربر و رمز TRADEBAN_BASIC_AUTH را وارد کنید.";
   }
   if (status === 403) {
     return "دسترسی به route حساس مسدود است — روی Vercel متغیر محیطی TRADEBAN_BASIC_AUTH را ست کنید و Redeploy بزنید، سپس در پنجرهٔ احراز هویت مرورگر لاگین کنید.";
