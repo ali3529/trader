@@ -26,7 +26,8 @@ import type { StrategyConfig } from "@/lib/config";
 import { cn } from "@/lib/utils";
 import { fetchAiConfig, fetchQwenStatus, saveAiConfig } from "@/lib/ai";
 import type { AiConfigView, AiProvider, QwenStatus } from "@/lib/ai";
-import { markUplinkDown, markUplinkUp } from "@/lib/engine/api";
+import { markUplinkDown, markUplinkUp, refreshExchangeProvider, setExchangeProvider } from "@/lib/engine/api";
+import type { ExchangeProvider } from "@/lib/engine/api";
 
 interface FieldDef {
   key: keyof StrategyConfig;
@@ -155,6 +156,13 @@ export default function SettingsPage() {
   const [keyMsg, setKeyMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [confirmText, setConfirmText] = useState("");
   const [realDialogOpen, setRealDialogOpen] = useState(false);
+  const [provider, setProvider] = useState<ExchangeProvider>("nobitex");
+  const [rzApiKey, setRzApiKey] = useState("");
+  const [rzSecret, setRzSecret] = useState("");
+  const [rzStatus, setRzStatus] = useState<{ configured: boolean; maskedKey: string | null; realEnabled: boolean } | null>(null);
+  const [rzConfirmText, setRzConfirmText] = useState("");
+  const [rzRealDialogOpen, setRzRealDialogOpen] = useState(false);
+  const [rzMsg, setRzMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [qwenStatus, setQwenStatus] = useState<QwenStatus | null>(null);
   const [aiConfig, setAiConfig] = useState<AiConfigView | null>(null);
   const [aiDraft, setAiDraft] = useState({
@@ -206,7 +214,102 @@ export default function SettingsPage() {
       if (status?.configured) void testConnection();
     });
     void refreshAiConfig();
+    void refreshExchangeProvider().then(setProvider);
+    void refreshRzKeys();
   }, []);
+
+  async function refreshRzKeys() {
+    try {
+      const res = await fetch("/api/ramzinex/keys");
+      setRzStatus((await res.json()) as { configured: boolean; maskedKey: string | null; realEnabled: boolean });
+    } catch {
+      setRzStatus(null);
+    }
+  }
+
+  async function chooseProvider(next: ExchangeProvider) {
+    try {
+      const res = await fetch("/api/exchange", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider: next }),
+      });
+      if (!res.ok) {
+        const b = (await res.json().catch(() => null)) as { statusMessage?: string } | null;
+        setRzMsg({ ok: false, text: b?.statusMessage ?? `HTTP ${res.status}` });
+        return;
+      }
+      setExchangeProvider(next);
+      setProvider(next);
+      setRzMsg({
+        ok: true,
+        text:
+          next === "ramzinex"
+            ? "صرافی فعال: رمزینکس — وب‌سوکت نوبیتکس خاموش می‌شود و اسکن روی کندل‌های بستهٔ REST ادامه دارد. صفحه تا لحظه‌ای دیگر بازنشانی می‌شود…"
+            : "صرافی فعال: نوبیتکس — مسیر قبلی برقرار است. صفحه تا لحظه‌ای دیگر بازنشانی می‌شود…",
+      });
+      // بازنشانی صفحه تا وب‌سوکت و کش داده بازار با صرافی جدید راه‌اندازی شوند
+      setTimeout(() => window.location.reload(), 1500);
+    } catch (err) {
+      setRzMsg({ ok: false, text: (err as Error).message });
+    }
+  }
+
+  async function saveRzKeys() {
+    setRzMsg(null);
+    try {
+      const res = await fetch("/api/ramzinex/keys", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ apiKey: rzApiKey, secret: rzSecret }),
+      });
+      if (!res.ok) {
+        const b = (await res.json().catch(() => null)) as { statusMessage?: string } | null;
+        setRzMsg({ ok: false, text: `ذخیره ناموفق: ${b?.statusMessage ?? `HTTP ${res.status}`}` });
+        return;
+      }
+      setRzApiKey("");
+      setRzSecret("");
+      setRzMsg({ ok: true, text: "کلیدهای رمزینکس رمزنگاری‌شده سمت سرور ذخیره شدند. (معامله واقعی همچنان غیرفعال است)" });
+      await refreshRzKeys();
+    } catch (err) {
+      setRzMsg({ ok: false, text: `خطا: ${(err as Error).message}` });
+    }
+  }
+
+  async function toggleRzReal(enable: boolean) {
+    try {
+      const res = await fetch("/api/ramzinex/keys", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(enable ? { enableReal: true, confirm: rzConfirmText } : { enableReal: false }),
+      });
+      const data = (await res.json()) as { ok?: boolean; statusMessage?: string; warning?: string | null };
+      if (!res.ok) {
+        if (res.status === 503) markUplinkDown(60_000, data.statusMessage ?? null);
+        setRzMsg({ ok: false, text: data.statusMessage ?? "عملیات ناموفق بود" });
+        return;
+      }
+      if (enable) {
+        if (data.warning) markUplinkDown(60_000, data.warning);
+        else markUplinkUp();
+      }
+      setRzMsg({
+        ok: !data.warning,
+        text: data.warning
+          ? data.warning
+          : enable
+            ? "معامله واقعی رمزینکس فعال شد."
+            : "معامله واقعی رمزینکس غیرفعال شد.",
+      });
+      setRzRealDialogOpen(false);
+      setRzConfirmText("");
+      await refreshRzKeys();
+      if (!enable && mode === "real") await engine.setMode("paper");
+    } catch (err) {
+      setRzMsg({ ok: false, text: `خطا: ${(err as Error).message}` });
+    }
+  }
 
   async function refreshQwenStatus() {
     try {
@@ -430,6 +533,108 @@ export default function SettingsPage() {
         <TabsContent value="keys" className="mt-4 space-y-4">
           <Card className="border-border/60">
             <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-bold">صرافی فعال</CardTitle>
+              <CardDescription className="text-[11px]">
+                منبع دادهٔ بازار و معامله را انتخاب کنید: نوبیتکس یا رمزینکس. با انتخاب رمزینکس، وب‌سوکت نوبیتکس خاموش
+                می‌شود و اسکن سیگنال روی کندل‌های بستهٔ REST ادامه دارد.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <Button size="sm" variant={provider === "nobitex" ? "default" : "outline"} className="rounded-full" onClick={() => void chooseProvider("nobitex")}>
+                  نوبیتکس
+                </Button>
+                <Button size="sm" variant={provider === "ramzinex" ? "default" : "outline"} className="rounded-full" onClick={() => void chooseProvider("ramzinex")}>
+                  رمزینکس
+                </Button>
+                {provider === "ramzinex" ? (
+                  <Badge className="rounded-full bg-sky-500/15 px-3 py-1 text-sky-400">داده بازار و سفارش‌ها از رمزینکس</Badge>
+                ) : null}
+              </div>
+
+              {provider === "ramzinex" ? (
+                <>
+                  <div className="flex flex-wrap items-center gap-2 text-xs">
+                    {rzStatus?.configured ? (
+                      <>
+                        <Badge className="rounded-full bg-profit/15 px-3 py-1 text-profit">کلید ذخیره شده: {rzStatus.maskedKey}</Badge>
+                        {rzStatus.realEnabled ? (
+                          <Badge className="rounded-full bg-loss/15 px-3 py-1 text-loss">معامله واقعی رمزینکس فعال</Badge>
+                        ) : (
+                          <Badge variant="outline" className="rounded-full border-border/70 px-3 py-1 text-muted-foreground">معامله واقعی غیرفعال</Badge>
+                        )}
+                      </>
+                    ) : (
+                      <Badge variant="outline" className="rounded-full border-border/70 px-3 py-1 text-muted-foreground">هیچ کلیدی ذخیره نشده — فقط داده عمومی بازار</Badge>
+                    )}
+                  </div>
+
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <div className="space-y-1.5">
+                      <Label className="text-[11px]" htmlFor="rz-api-key">API-Key رمزینکس (x-api-key)</Label>
+                      <Input id="rz-api-key" name="rz-api-key" autoComplete="off" dir="ltr" value={rzApiKey} onChange={(e) => setRzApiKey(e.target.value)} placeholder="کلید API از بخش مدیریت API رمزینکس" className="h-9 rounded-lg text-xs" />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label className="text-[11px]" htmlFor="rz-secret">کلید محرمانه (Secret)</Label>
+                      <Input id="rz-secret" name="rz-secret" autoComplete="new-password" dir="ltr" type="password" value={rzSecret} onChange={(e) => setRzSecret(e.target.value)} placeholder="secret نمایش‌داده‌شده هنگام ساخت کلید" className="h-9 rounded-lg text-xs" />
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-4">
+                    <Button size="sm" className="rounded-full" onClick={saveRzKeys} disabled={!rzApiKey || !rzSecret}>
+                      <Save className="ml-1 h-3.5 w-3.5" /> ذخیره رمزنگاری‌شده
+                    </Button>
+                    {rzStatus?.configured ? (
+                      rzStatus.realEnabled ? (
+                        <Button size="sm" variant="outline" className="rounded-full border-loss/50 text-loss" onClick={() => void toggleRzReal(false)}>
+                          غیرفعال‌سازی معامله واقعی رمزینکس
+                        </Button>
+                      ) : (
+                        <AlertDialog open={rzRealDialogOpen} onOpenChange={setRzRealDialogOpen}>
+                          <AlertDialogTrigger asChild>
+                            <Button size="sm" variant="destructive" className="rounded-full">فعال‌سازی معامله واقعی رمزینکس…</Button>
+                          </AlertDialogTrigger>
+                          <AlertDialogContent dir="rtl" className="max-w-md rounded-2xl text-right">
+                            <AlertDialogHeader>
+                              <AlertDialogTitle className="text-sm">تأیید روشن معامله واقعی رمزینکس</AlertDialogTitle>
+                              <AlertDialogDescription className="text-xs leading-6">
+                                با فعال‌سازی، ربات می‌تواند با پول واقعی شما در رمزینکس سفارش ارسال کند. برای تأیید، عبارت
+                                زیر را دقیقاً وارد کنید:
+                                <span className="num mt-2 block rounded-lg bg-secondary px-3 py-2 text-center font-bold text-loss" dir="ltr">
+                                  ENABLE-REAL-TRADING
+                                </span>
+                              </AlertDialogDescription>
+                            </AlertDialogHeader>
+                            <Input
+                              dir="ltr"
+                              value={rzConfirmText}
+                              onChange={(e) => setRzConfirmText(e.target.value)}
+                              placeholder="ENABLE-REAL-TRADING"
+                              className="rounded-lg text-xs"
+                            />
+                            <AlertDialogFooter>
+                              <AlertDialogCancel className="rounded-full text-xs">انصراف</AlertDialogCancel>
+                              <AlertDialogAction className="rounded-full bg-loss text-white hover:bg-loss/90" onClick={() => void toggleRzReal(true)}>
+                                می‌دانم و تأیید می‌کنم
+                              </AlertDialogAction>
+                            </AlertDialogFooter>
+                          </AlertDialogContent>
+                        </AlertDialog>
+                      )
+                    ) : null}
+                  </div>
+                </>
+              ) : null}
+
+              {rzMsg ? (
+                <p className={cn("rounded-lg px-3 py-2 text-[11px]", rzMsg.ok ? "bg-profit/10 text-profit" : "bg-loss/10 text-loss")}>
+                  {rzMsg.text}
+                </p>
+              ) : null}
+            </CardContent>
+          </Card>
+
+          <Card className="border-border/60">
+            <CardHeader className="pb-2">
               <CardTitle className="text-sm font-bold">وضعیت اتصال به نوبیتکس</CardTitle>
               <CardDescription className="text-[11px]">
                 کلیدها با AES-256-GCM روی سرور رمزنگاری می‌شوند و هرگز به مرورگر یا لاگ‌ها برنمی‌گردند.
@@ -526,7 +731,7 @@ export default function SettingsPage() {
                   <p className="text-[10px] text-muted-foreground">حالت فعلی</p>
                   <p className={cn("mt-1 text-xs font-bold", mode === "real" ? "text-loss" : "text-profit")}>
                     {mode === "real" ? (
-                      "معامله واقعی روی نوبیتکس"
+                      provider === "ramzinex" ? "معامله واقعی روی رمزینکس" : "معامله واقعی روی نوبیتکس"
                     ) : (
                       <>معامله آزمایشی <bdi dir="ltr" className="inline-block font-mono">(Paper Trading)</bdi></>
                     )}

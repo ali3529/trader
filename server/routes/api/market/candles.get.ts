@@ -2,6 +2,8 @@ import { defineHandler } from "nitro";
 import { getQuery, createError } from "nitro/h3";
 import { publicGet, assertValidSymbol } from "../../../utils/nobitex";
 import { demoCandles } from "../../../utils/demoData";
+import { getExchangeProvider } from "../../../utils/exchangePrefs";
+import { fetchCandles as ramzinexCandles } from "../../../utils/ramzinex";
 
 const RESOLUTION_MAP: Record<string, string> = {
   "60": "1",
@@ -37,6 +39,26 @@ export default defineHandler(async (event) => {
   const from = Number(q.from);
   const to = Number(q.to);
   if (!isFinite(from) || !isFinite(to) || to <= from) throw createError({ statusCode: 400, statusMessage: "بازه زمانی نامعتبر" });
+
+  // رمزینکس: /chart/tv/history همان قالب UDF را دارد (زمان ثانیه)
+  if (getExchangeProvider() === "ramzinex") {
+    try {
+      const minutes = Number(resolution) >= 60 ? Number(resolution) / 60 : Number(resolution);
+      const rz = await ramzinexCandles(symbol, minutes, from / 1000, to / 1000);
+      return {
+        time: rz.t.map((t) => t * 1000),
+        open: rz.o,
+        high: rz.h,
+        low: rz.l,
+        close: rz.c,
+        volume: rz.v,
+        source: "live" as const,
+      };
+    } catch (err) {
+      console.log(`[ramzinex] candles unreachable for ${symbol} (${(err as Error).message}) -> demo data`);
+      return demoCandles(symbol, Number(resolution), from, to);
+    }
+  }
 
   // مستندات نوبیتکس: from/to در UDF history بر حسب ثانیه یونیکس هستند؛
   // فرانت‌اند میلی‌ثانیه می‌فرستد، پس تبدیل می‌کنیم و زمان پاسخ را به میلی‌ثانیه برمی‌گردانیم.

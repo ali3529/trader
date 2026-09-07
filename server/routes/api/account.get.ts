@@ -3,6 +3,8 @@ import { createError } from "nitro/h3";
 import { decodePrivateKey, privateRequest, loadKeys } from "../../utils/nobitex";
 import { assertSensitiveRequest } from "../../utils/requestSecurity";
 import { loadOrderLedger, recordBotOrder } from "../../utils/orderLedger";
+import { getExchangeProvider } from "../../utils/exchangePrefs";
+import { fetchAccount as ramzinexAccount, loadRamzinexKeys, RamzinexError } from "../../utils/ramzinex";
 
 interface WalletBalance {
   balance?: string | number;
@@ -17,6 +19,16 @@ interface WalletBalance {
  */
 export default defineHandler(async (event) => {
   assertSensitiveRequest(event);
+  if (getExchangeProvider() === "ramzinex") {
+    if (!loadRamzinexKeys()) throw createError({ statusCode: 400, statusMessage: "کلید رمزینکس ذخیره نشده است" });
+    try {
+      const account = await ramzinexAccount();
+      return { ...account, botOrders: loadOrderLedger() };
+    } catch (error) {
+      const status = error instanceof RamzinexError ? error.statusCode : 503;
+      throw createError({ statusCode: status >= 400 ? status : 503, statusMessage: (error as Error).message });
+    }
+  }
   const keys = loadKeys();
   if (!keys) throw createError({ statusCode: 400, statusMessage: "کلید API ذخیره نشده است" });
   try {

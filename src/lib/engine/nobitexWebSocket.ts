@@ -21,6 +21,7 @@ interface WsConfig {
   token: string | null;
   websocketAuthParam: string | null;
   expiresIn?: number;
+  disabled?: boolean;
 }
 
 interface SocketCallbacks {
@@ -102,6 +103,18 @@ export class NobitexWebSocket {
   }
 
   private async loadConfig(): Promise<WsConfig> {
+    // وقتی صرافی فعال رمزینکس است، سوکت نوبیتکس خاموش می‌ماند (اسکن روی کندل بسته ادامه دارد).
+    try {
+      const exchangeResponse = await fetch("/api/exchange", { cache: "no-store" });
+      if (exchangeResponse.ok) {
+        const data = await exchangeResponse.json() as { provider?: string };
+        if (data.provider === "ramzinex") {
+          return { wsUrl: "", privateEnabled: false, token: null, websocketAuthParam: null, disabled: true };
+        }
+      }
+    } catch {
+      // نبود اطلاعات → مسیر پیش‌فرض نوبیتکس
+    }
     let sandbox = false;
     let configured = false;
     try {
@@ -156,6 +169,11 @@ export class NobitexWebSocket {
       config = { wsUrl: PROD_WS, privateEnabled: false, token: null, websocketAuthParam: null };
     }
     if (this.stopped) return;
+    if (config.disabled) {
+      console.info("[nobitex-ws] disabled — صرافی فعال نوبیتکس نیست");
+      this.setState({ status: "idle", privateEnabled: false, error: null });
+      return;
+    }
 
     this.privateEnabled = config.privateEnabled;
     this.authParam = config.websocketAuthParam;

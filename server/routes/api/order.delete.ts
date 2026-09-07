@@ -2,6 +2,8 @@ import { defineHandler } from "nitro";
 import { readBody, createError } from "nitro/h3";
 import { privateRequest, loadKeys } from "../../utils/nobitex";
 import { assertSensitiveRequest } from "../../utils/requestSecurity";
+import { getExchangeProvider } from "../../utils/exchangePrefs";
+import { cancelOrder as ramzinexCancel, loadRamzinexKeys } from "../../utils/ramzinex";
 
 /**
  * لغو سفارش — طبق مستندات رسمی نوبیتکس:
@@ -16,6 +18,12 @@ export default defineHandler(async (event) => {
   const body = await readBody<{ id?: string | number }>(event);
   const id = Number(body?.id);
   if (!Number.isInteger(id) || id <= 0) throw createError({ statusCode: 400, statusMessage: "شناسه سفارش نامعتبر" });
+  if (getExchangeProvider() === "ramzinex") {
+    const rzKeys = loadRamzinexKeys();
+    if (!rzKeys?.realEnabled) throw createError({ statusCode: 403, statusMessage: "معامله واقعی رمزینکس فعال نیست" });
+    await ramzinexCancel(id);
+    return { ok: true };
+  }
   await privateRequest("POST", "/market/orders/update-status", {
     body: { order: id, status: "canceled" },
     retryable: true,

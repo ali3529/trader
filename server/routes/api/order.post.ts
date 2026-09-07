@@ -3,6 +3,15 @@ import { readBody, createError } from "nitro/h3";
 import { privateRequest, loadKeys, assertValidSymbol } from "../../utils/nobitex";
 import { assertSensitiveRequest } from "../../utils/requestSecurity";
 import { recordBotOrder } from "../../utils/orderLedger";
+import { getExchangeProvider } from "../../utils/exchangePrefs";
+import {
+  cancelOrder as rzCancelOrder,
+  fetchAccount as rzFetchAccount,
+  loadRamzinexKeys,
+  orderStatus as rzOrderStatus,
+  placeOrder as rzPlaceOrder,
+  type RzOrder,
+} from "../../utils/ramzinex";
 
 interface Body {
   symbol?: string;
@@ -49,6 +58,7 @@ export default defineHandler(async (event) => {
 });
 
 async function submitOrder(body: Body) {
+  if (getExchangeProvider() === "ramzinex") return submitRamzinexOrder(body);
   const keys = loadKeys();
   if (!keys || !keys.realEnabled) {
     throw createError({ statusCode: 403, statusMessage: "معامله واقعی فعال نیست" });
@@ -229,4 +239,119 @@ function toToman(rial: number): number {
 function finitePositive(value: unknown): number | undefined {
   const number = Number(value);
   return Number.isFinite(number) && number > 0 ? number : undefined;
+}
+
+/**
+ * ثبت سفارش واقعی روی رمزینکس (limit: /users/me/orders/limit ، market: v2 /users/me/orders/market).
+ * همان سقف‌های ریسک سرور با دارایی‌های رمزینکس اعمال می‌شود.
+ */
+async function submitRamzinexOrder(body: Body) {
+  const keys = loadRamzinexKeys();
+  if (!keys || !keys.realEnabled) {
+    throw createError({ statusCode: 403, statusMessage: "معامله واقعی رمزینکس فعال نیست" });
+  }
+  const symbol = assertValidSymbol(String(body?.symbol ?? "").toUpperCase());
+  const type = body?.side === "sell" ? "sell" : body?.side === "buy" ? "buy" : null;
+  if (!type) throw createError({ statusCode: 400, statusMessage: "side نامعتبر" });
+  const quantity = Number(body?.qty);
+  if (!isFinite(quantity) || quantity <= 0) throw createError({ statusCode: 400, statusMessage: "qty نامعتبر" });
+  const clientOrderId = String(body?.clientOrderId ?? "").trim();
+  if (!/^[A-Za-z0-9_-]{8,64}$/.test(clientOrderId)) {
+    throw createError({ statusCode: 400, statusMessage: "clientOrderId معتبر و یکتا الزامی است" });
+  }
+  const positionId = String(body?.positionId ?? "").trim();
+  if (!/^[A-Z0-9_-]{8,80}$/i.test(positionId)) {
+    throw createError({ statusCode: 400, statusMessage: "positionId معتبر الزامی است" });
+  }
+  const estimatedPriceToman = Number(body?.price);
+  if (!isFinite(estimatedPriceToman) || estimatedPriceToman <= 0) {
+    throw createError({ statusCode: 400, statusMessage: "قیمت تخمینی معتبر الزامی است" });
+  }
+
+  const account = await rzFetchAccount();
+  const openOrders = account.openOrders as unknown as RzOrder[];
+  const baseCoin = symbol.slice(0, -3);
+  if (type === "sell") {
+    const available = Math.max(0, account.balances[baseCoin] ?? 0);
+    if (quantity > available) {
+      throw createError({ statusCode: 409, statusMessage: "مقدار فروش از موجودی آزاد رمزینکس بیشتر است" });
+    }
+  } else {
+    if (openOrders.length >= MAX_OPEN_ORDERS) {
+      throw createError({ statusCode: 409, statusMessage: `سقف امن ${MAX_OPEN_ORDERS} سفارش باز تکمیل است` });
+    }
+    const stopToman = Number(body?.stop);
+    if (!isFinite(stopToman) || stopToman <= 0 || stopToman >= estimatedPriceToman) {
+      throw createError({ statusCode: 400, statusMessage: "برای خرید واقعی Stop معتبر و پایین‌تر از ورود الزامی است" });
+    }
+    const rialTotal = account.totalBalances.IRR ?? 0;
+    const rialBlocked = account.blockedBalances.IRR ?? 0;
+    const totalToman = rialTotal / 10;
+    const availableToman = Math.max(0, totalToman - rialBlocked / 10);
+    const notionalToman = quantity * estimatedPriceToman;
+    if (notionalToman < MIN_ORDER_TOMAN) {
+      throw createError({ statusCode: 409, statusMessage: `ارزش سفارش کمتر از حداقل امن ${MIN_ORDER_TOMAN.toLocaleString("fa-IR")} تومان است` });
+    }
+    if (notionalToman > availableToman) {
+      throw createError({ statusCode: 409, statusMessage: "ارزش سفارش از موجودی آزاد ریالی رمزینکس بیشتر است" });
+    }
+    const riskToman = quantity * (estimatedPriceToman - stopToman);
+    if (riskToman > totalToman * (MAX_RISK_PCT / 100)) {
+      throw createError({ statusCode: 409, statusMessage: `ریسک سفارش از سقف سرور (${MAX_RISK_PCT}٪) بیشتر است` });
+    }
+    const engagedToman = openOrders.reduce((sum, item) => {
+      if (item.side !== "buy") return sum;
+      return sum + item.qty * (item.price / 10);
+    }, 0);
+    if (engagedToman + notionalToman > totalToman * (MAX_ENGAGED_PCT / 100)) {
+      throw createError({ statusCode: 409, statusMessage: `سرمایه درگیر از سقف سرور (${MAX_ENGAGED_PCT}٪) بیشتر می‌شود` });
+    }
+  }
+
+  const execution = body?.type === "limit" ? "limit" : "market";
+  const orderId = await rzPlaceOrder(symbol, type, execution, quantity, estimatedPriceToman);
+
+  // ثبت سفارش الزاماً fill نیست؛ وضعیت واقعی خوانده و اگر باز ماند لغو می‌شود (مانند نوبیتکس).
+  let confirmed = await rzOrderStatus(orderId);
+  let reconciliationRequired = true;
+  try {
+    if (confirmed.statusId === 1) {
+      await rzCancelOrder(orderId);
+      confirmed = await rzOrderStatus(orderId);
+    }
+    reconciliationRequired = confirmed.statusId !== 2 && confirmed.statusId !== 3;
+  } catch {
+    // سفارش ثبت شده است؛ در ابهام هرگز دوباره ارسال نمی‌کنیم.
+  }
+  const terminal = confirmed.statusId === 2 || confirmed.statusId === 3;
+  const response = {
+    ok: true,
+    orderId,
+    clientOrderId,
+    orderStatus: confirmed.status,
+    filledQuantity: terminal ? confirmed.filled : 0,
+    averagePrice: toToman(confirmed.averagePrice || confirmed.price),
+    reconciliationRequired,
+  };
+  recordBotOrder({
+    orderId,
+    clientOrderId,
+    symbol,
+    side: type,
+    requestedQty: quantity,
+    filledQty: response.filledQuantity,
+    averagePrice: response.averagePrice,
+    status: confirmed.status,
+    reconciliationRequired,
+    createdAt: Date.now(),
+    positionId,
+    stop: finitePositive(body.stop),
+    target: finitePositive(body.target),
+    rr: finitePositive(body.rr),
+    atr: finitePositive(body.atr),
+    signalTime: finitePositive(body.signalTime),
+    signalScore: finitePositive(body.signalScore),
+    reason: String(body.reason ?? "").slice(0, 120),
+  });
+  return response;
 }

@@ -19,7 +19,7 @@ import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { Badge } from "@/components/ui/badge";
 import { Logo } from "@/components/brand/Logo";
 import { useEngine, useEngineState } from "@/context/BotContext";
-import { useDataSource } from "@/hooks/useDataSource";
+import { useDataSource, useExchangeProvider } from "@/hooks/useDataSource";
 import { useUplink } from "@/hooks/useUplink";
 import { cn } from "@/lib/utils";
 import { formatTime } from "@/lib/format";
@@ -63,6 +63,7 @@ function StatusStrip() {
   const stats = useEngineState((e) => e.stats());
   const ws = useEngineState((e) => ({ ...e.websocket }));
   const dataSource = useDataSource();
+  const provider = useExchangeProvider();
 
   return (
     <div className="flex flex-wrap items-center gap-2">
@@ -75,12 +76,15 @@ function StatusStrip() {
       >
         {stats.mode === "real" ? "معامله واقعی" : "Paper Trading"}
       </Badge>
+      <Badge className="rounded-full bg-sky-500/15 px-3 py-1 text-xs text-sky-400">
+        صرافی: {provider === "ramzinex" ? "رمزینکس" : "نوبیتکس"}
+      </Badge>
       {dataSource === "demo" ? (
         <Badge
           className="rounded-full bg-warn/15 px-3 py-1 text-xs text-warn"
-          title="اتصال سرور به apiv2.nobitex.ir برقرار نشد؛ دادهٔ نمایش‌داده‌شده شبیه‌سازی‌شده است."
+          title="اتصال سرور به صرافی فعال برقرار نشد؛ دادهٔ نمایش‌داده‌شده شبیه‌سازی‌شده است."
         >
-          داده شبیه‌سازی‌شده — نوبیتکس در دسترس نیست
+          داده شبیه‌سازی‌شده — صرافی در دسترس نیست
         </Badge>
       ) : null}
       <UplinkBadge />

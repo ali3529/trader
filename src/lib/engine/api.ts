@@ -130,6 +130,41 @@ function trackSource(source?: "live" | "demo"): void {
   setDataSource(source === "demo" ? "demo" : "live");
 }
 
+/** صرافی فعال — مسیرهای سرور منبع واقعی را انتخاب می‌کنند؛ اینجا فقط برای خاموش‌کردن مسیر مستقیم نوبیتکس */
+export type ExchangeProvider = "nobitex" | "ramzinex";
+
+let exchangeProvider: ExchangeProvider = "nobitex";
+const epListeners = new Set<(p: ExchangeProvider) => void>();
+
+export function getExchangeProvider(): ExchangeProvider {
+  return exchangeProvider;
+}
+
+export function onExchangeProvider(fn: (p: ExchangeProvider) => void): () => void {
+  epListeners.add(fn);
+  return () => epListeners.delete(fn);
+}
+
+export function setExchangeProvider(p: ExchangeProvider): void {
+  if (p === exchangeProvider) return;
+  exchangeProvider = p;
+  directRestWorks = null;
+  epListeners.forEach((fn) => fn(p));
+}
+
+export async function refreshExchangeProvider(): Promise<ExchangeProvider> {
+  try {
+    const res = await fetch("/api/exchange", { cache: "no-store" });
+    if (res.ok) {
+      const data = (await res.json()) as { provider?: string };
+      setExchangeProvider(data.provider === "ramzinex" ? "ramzinex" : "nobitex");
+    }
+  } catch {
+    // در نبود سرور، پیش‌فرض نوبیتکس می‌ماند
+  }
+  return exchangeProvider;
+}
+
 /** وضعیت اتصال خصوصی (موجودی/سفارش‌ها) به نوبیتکس — مستقل از منبع دادهٔ بازار */
 export interface UplinkState {
   status: "unknown" | "up" | "down";
@@ -254,11 +289,15 @@ export async function fetchCandles(
   from: number,
   to: number
 ): Promise<Candle[]> {
-  const direct = await enqueue(() =>
-    tryDirectJson<UdfHistory | RawCandleArrays[] | RawCandleArrays>((base) =>
-      `${base}/market/udf/history?symbol=${encodeURIComponent(symbol)}&resolution=${udfResolution(resolution)}&from=${Math.floor(from / 1000)}&to=${Math.floor(to / 1000)}`
-    )
-  );
+  // در حالت رمزینکس مسیر مستقیم نوبیتکس معنا ندارد — فقط پروکسی سرور
+  const direct =
+    exchangeProvider === "ramzinex"
+      ? null
+      : await enqueue(() =>
+          tryDirectJson<UdfHistory | RawCandleArrays[] | RawCandleArrays>((base) =>
+            `${base}/market/udf/history?symbol=${encodeURIComponent(symbol)}&resolution=${udfResolution(resolution)}&from=${Math.floor(from / 1000)}&to=${Math.floor(to / 1000)}`
+          )
+        );
   if (direct) {
     trackSource("live");
     let d: RawCandleArrays;
@@ -280,11 +319,14 @@ export async function fetchCandles(
 
 /** دفتر سفارش‌ها: اول مستقیم (v3)، در نبود آن پروکسی سرور */
 export async function fetchOrderBook(symbol: string): Promise<{ asks: number[][]; bids: number[][] }> {
-  const direct = await enqueue(() =>
-    tryDirectJson<{ asks?: (string | number)[][]; bids?: (string | number)[][] }>(
-      (base) => `${base}/v3/orderbook/${encodeURIComponent(symbol)}`
-    )
-  );
+  const direct =
+    exchangeProvider === "ramzinex"
+      ? null
+      : await enqueue(() =>
+          tryDirectJson<{ asks?: (string | number)[][]; bids?: (string | number)[][] }>(
+            (base) => `${base}/v3/orderbook/${encodeURIComponent(symbol)}`
+          )
+        );
   if (direct) {
     trackSource("live");
     return { asks: toNums(direct.asks), bids: toNums(direct.bids) };

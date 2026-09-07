@@ -133,7 +133,7 @@ export default function Dashboard() {
             <Badge variant="outline" className="rounded-full border-border/70">آخرین بررسی: {stats.lastTick ? new Date(stats.lastTick).toLocaleTimeString("fa-IR") : "—"}</Badge>
             <Badge variant="outline" className="rounded-full border-border/70">سرمایه درگیر: {formatPct(stats.engagedCapitalPct, false)}</Badge>
             <Badge variant="outline" className="rounded-full border-border/70">Drawdown: {formatPct(stats.drawdownPct, false)}</Badge>
-            {account ? <Badge variant="outline" className="rounded-full border-profit/40 text-profit">نوبیتکس: {account.assetCount.toLocaleString("fa-IR")} دارایی · {account.openOrderCount.toLocaleString("fa-IR")} سفارش باز</Badge> : null}
+            {account ? <Badge variant="outline" className="rounded-full border-profit/40 text-profit">صرافی: {account.assetCount.toLocaleString("fa-IR")} دارایی · {account.openOrderCount.toLocaleString("fa-IR")} سفارش باز</Badge> : null}
           </div>
         </CardContent>
       </Card>

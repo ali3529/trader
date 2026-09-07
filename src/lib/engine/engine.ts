@@ -23,7 +23,7 @@ import {
   managePosition,
   riskState,
 } from "../risk/risk";
-import { configureApi, fetchCandles, getApiLogs, markUplinkDown, markUplinkUp, onApiLog } from "./api";
+import { configureApi, fetchCandles, getApiLogs, getExchangeProvider, markUplinkDown, markUplinkUp, onApiLog } from "./api";
 import { NobitexWebSocket } from "./nobitexWebSocket";
 import type { NobitexSocketState, RealtimeMarketUpdate } from "./nobitexWebSocket";
 import { formatDate } from "../format";
@@ -256,9 +256,11 @@ export class BotEngine {
   async setMode(mode: "paper" | "real"): Promise<void> {
     if (mode === this.mode) return;
     if (mode === "real") {
-      const res = await fetch("/api/keys").then((r) => r.json()) as { configured?: boolean; realEnabled?: boolean };
+      // دروازهٔ معامله واقعی از صرافی فعال خوانده می‌شود (نوبیتکس یا رمزینکس)
+      const gate = getExchangeProvider() === "ramzinex" ? "/api/ramzinex/keys" : "/api/keys";
+      const res = await fetch(gate, { cache: "no-store" }).then((r) => r.json()) as { configured?: boolean; realEnabled?: boolean };
       if (!res.configured || !res.realEnabled) {
-        this.notice = "برای معامله واقعی ابتدا کلیدها را در تنظیمات ذخیره و گزینه «معامله واقعی» را با تأیید روشن فعال کنید.";
+        this.notice = "برای معامله واقعی ابتدا کلیدهای صرافی فعال را در تنظیمات ذخیره و گزینه «معامله واقعی» را با تأیید روشن فعال کنید.";
         this.notify();
         return;
       }
