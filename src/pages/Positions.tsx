@@ -11,6 +11,7 @@ export default function Positions() {
   const positions = useEngineState((e) => e.positions.slice());
   const scans = useEngineState((e) => ({ ...e.scans }));
   const mode = useEngineState((e) => e.mode);
+  const serverMode = useEngineState((e) => e.serverMode);
   const exchangeOrders = useEngineState((e) => (e.account?.openOrders ?? []).slice()) as Array<Record<string, unknown>>;
 
   return (
@@ -96,9 +97,11 @@ export default function Positions() {
                   size="sm"
                   variant="destructive"
                   className="w-full rounded-full text-xs"
+                  disabled={serverMode}
                   onClick={() => engine.closePositionManually(p.id)}
+                  title={serverMode ? "این صفحه فقط وضعیت رانر سرور را نمایش می‌دهد" : undefined}
                 >
-                  بستن دستی پوزیشن
+                  {serverMode ? "مدیریت خودکار توسط سرور" : "بستن دستی پوزیشن"}
                 </Button>
               </CardContent>
             </Card>

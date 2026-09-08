@@ -414,7 +414,7 @@ export interface RzOrder {
 
 const STATUS_LABEL: Record<number, string> = { 1: "open", 2: "canceled", 3: "done", 4: "partial" };
 
-function normalizeOrder(item: Record<string, unknown>): RzOrder {
+export function normalizeOrder(item: Record<string, unknown>): RzOrder {
   const pairId = Number(item.pair_id ?? 0);
   const statusId = Number(item.status_id ?? 1);
   return {
@@ -424,7 +424,14 @@ function normalizeOrder(item: Record<string, unknown>): RzOrder {
     side: String(item.type_en ?? item.type ?? "").toLowerCase() === "sell" ? "sell" : "buy",
     price: Number(item.order_price_nr ?? item.order_price ?? 0),
     qty: Number(item.amount_nr ?? item.amount ?? 0),
-    filled: Number(item.filled_nr ?? 0),
+    filled: Number(
+      item.filled_nr ??
+      item.filled_amount_nr ??
+      item.matched_amount_nr ??
+      item.filled ??
+      item.matched_amount ??
+      0,
+    ),
     statusId,
     status: STATUS_LABEL[statusId] ?? "open",
     averagePrice: Number(item.average_price_nr ?? item.average_price ?? 0),
@@ -469,7 +476,7 @@ export async function placeOrder(
 
 /** وضعیت سفارش: GET /users/me/orders2/{order_id} */
 export async function orderStatus(orderId: number): Promise<RzOrder> {
-  const data = await privateRequest<Record<string, unknown>>(`/users/me/orders2/${orderId}`);
+  const data = await privateRequest<Record<string, unknown>>("GET", `/users/me/orders2/${orderId}`);
   return normalizeOrder(data ?? {});
 }
 

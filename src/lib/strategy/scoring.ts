@@ -18,9 +18,16 @@ export interface EvaluateInput {
   cfg: StrategyConfig;
 }
 
+/** تصمیم نهایی ورود: همه شروط حیاتی و حداقل امتیاز باید هم‌زمان برقرار باشند. */
+export function qualifiesEntry(criteria: CriterionResult[], minConfirmations: number): boolean {
+  const score = criteria.filter((criterion) => criterion.passed).length;
+  return criteria.every((criterion) => !criterion.critical || criterion.passed) && score >= minConfirmations;
+}
+
 /**
  * امتیازدهی ورود با ۸ معیار؛ ورود فقط با عبور از همه شروط حیاتی
- * (ساختار، محل معتبر، تأیید ورود، RR≥1.5، Stop معتبر) و حداقل ۶ تأیید از ۸.
+ * (ساختار، محل معتبر، تأیید ورود، مومنتوم ۱۵دقیقه، RR≥1.5، Stop معتبر)
+ * و حداقل ۶ تأیید از ۸.
  * Grid هرگز معیار ورود نیست — فقط در سیگنال برای تقسیم سرمایه حمل می‌شود.
  */
 export function evaluateEntry({ symbol, candles4h, candles1h, candles15m, cfg }: EvaluateInput): EntrySignal | null {
@@ -50,7 +57,7 @@ export function evaluateEntry({ symbol, candles4h, candles1h, candles15m, cfg }:
   const pattern = patterns[0] ?? null;
   const patternOk = pattern !== null;
 
-  // ۴) فیلتر مومنتوم ۱۵ دقیقه — فقط وتوکننده، نه سیگنال‌دهنده
+  // ۴) فیلتر نهایی مومنتوم ۱۵ دقیقه — شرط حیاتیِ وتوکننده، نه سیگنال‌دهنده
   const rsi15 = lastRsi(candles15m, cfg.rsiPeriod);
   const momentumOk = rsi15 !== null && rsi15 >= cfg.momentumRsiMin && rsi15 <= cfg.momentumRsiMax;
 
@@ -113,7 +120,7 @@ export function evaluateEntry({ symbol, candles4h, candles1h, candles15m, cfg }:
       id: "momentum15m",
       label: "مومنتوم ۱۵ دقیقه",
       passed: momentumOk,
-      critical: false,
+      critical: true,
       detail: rsi15 !== null
         ? `RSI پانزده‌دقیقه: ${Math.round(rsi15).toLocaleString("fa-IR")} (بازه مجاز ${cfg.momentumRsiMin}–${cfg.momentumRsiMax})`
         : "داده کافی برای RSI پانزده‌دقیقه نیست",
@@ -159,8 +166,7 @@ export function evaluateEntry({ symbol, candles4h, candles1h, candles15m, cfg }:
   ];
 
   const score = criteria.filter((c) => c.passed).length;
-  const criticalOk = criteria.every((c) => !c.critical || c.passed);
-  const qualified = criticalOk && score >= cfg.minConfirmations;
+  const qualified = qualifiesEntry(criteria, cfg.minConfirmations);
 
   const grid = buildGrid(candles1h, cfg, atr1h);
 

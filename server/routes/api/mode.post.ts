@@ -4,7 +4,8 @@ import { assertSensitiveRequest } from "../../utils/requestSecurity";
 import { getExchangeProvider } from "../../utils/exchangePrefs";
 import { loadKeys } from "../../utils/nobitex";
 import { loadRamzinexKeys } from "../../utils/ramzinex";
-import { setBotMode, type BotMode } from "../../utils/botMode";
+import { getBotMode, setBotMode, type BotMode } from "../../utils/botMode";
+import { setRunnerRunning } from "../../utils/botRunner";
 
 /**
  * ذخیرهٔ حالت معامله — «real» فقط زمانی پذیرفته می‌شود که دروازهٔ معامله واقعی
@@ -23,6 +24,12 @@ export default defineHandler(async (event) => {
       throw createError({ statusCode: 403, statusMessage: "معامله واقعی فعال نیست" });
     }
   }
+  const currentMode = await getBotMode();
+  if (currentMode !== mode) {
+    // تغییر Paper/Real هرگز یک رانر فعال را بی‌صدا به دفتر دیگر منتقل نمی‌کند.
+    // کاربر پس از تغییر حالت، رانر سرور را صریحاً دوباره روشن می‌کند.
+    await setRunnerRunning(false, currentMode);
+  }
   await setBotMode(mode as BotMode);
-  return { ok: true, mode };
+  return { ok: true, mode, runnerStopped: currentMode !== mode };
 });

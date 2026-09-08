@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Check, CloudCog, Copy, Play, RotateCcw, Square } from "lucide-react";
+import { AlertTriangle, Check, CloudCog, Copy, Play, RotateCcw, Square } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -15,6 +15,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { useEngineState } from "@/context/BotContext";
 import { cn } from "@/lib/utils";
 
 interface RunnerPosition {
@@ -25,6 +26,7 @@ interface RunnerPosition {
   stop: number;
   target: number;
   pnlPct: number;
+  mode: "paper" | "real";
 }
 
 interface RunnerScan {
@@ -38,6 +40,8 @@ interface RunnerScan {
 
 interface RunnerStatus {
   running: boolean;
+  mode: "paper" | "real";
+  realReady: boolean;
   cash: number;
   equity: number;
   peakEquity: number;
@@ -69,14 +73,16 @@ function relativeFa(ms: number | null): string {
 }
 
 /**
- * کنترل و پایش رانر ۲۴/۷ سمت سرور (کاغذی) — حتی وقتی مرورگر/سیستم خاموش است،
+ * کنترل و پایش رانر ۲۴/۷ سمت سرور — حتی وقتی مرورگر/سیستم خاموش است،
  * Vercel Cron (یا پینگر خارجی) هر ۱۰ دقیقه یک tick اجرا می‌کند.
  */
 export function ServerRunnerCard() {
+  const selectedMode = useEngineState((e) => e.mode);
   const [status, setStatus] = useState<RunnerStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [copied, setCopied] = useState(false);
+  const [startOpen, setStartOpen] = useState(false);
   const [resetOpen, setResetOpen] = useState(false);
 
   const refresh = useCallback(async () => {
@@ -92,9 +98,9 @@ export function ServerRunnerCard() {
     void refresh();
     const id = setInterval(() => void refresh(), 20_000);
     return () => clearInterval(id);
-  }, [refresh]);
+  }, [refresh, selectedMode]);
 
-  async function control(body: { running?: boolean; reset?: boolean }, okText: string) {
+  async function control(body: { running?: boolean; reset?: boolean; mode?: "paper" | "real" }, okText: string) {
     setBusy(true);
     setMsg(null);
     try {
@@ -103,9 +109,9 @@ export function ServerRunnerCard() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      const data = (await res.json().catch(() => null)) as (RunnerStatus & { statusMessage?: string }) | null;
+      const data = (await res.json().catch(() => null)) as (RunnerStatus & { statusMessage?: string; message?: string }) | null;
       if (!res.ok) {
-        setMsg({ ok: false, text: data?.statusMessage ?? `HTTP ${res.status}` });
+        setMsg({ ok: false, text: data?.statusMessage ?? data?.message ?? `HTTP ${res.status}` });
         return;
       }
       if (data) setStatus(data);
@@ -114,18 +120,21 @@ export function ServerRunnerCard() {
       setMsg({ ok: false, text: (err as Error).message });
     } finally {
       setBusy(false);
+      setStartOpen(false);
       setResetOpen(false);
     }
   }
 
   const pingUrl = `${window.location.origin}/api/cron/tick`;
+  const mode = status?.running ? status.mode : selectedMode;
+  const isReal = mode === "real";
 
   return (
-    <Card dir="rtl" className="border-border/60">
+    <Card dir="rtl" className={cn("border-border/60", isReal && "border-loss/50")}>
       <CardHeader className="pb-2">
         <CardTitle className="flex items-center gap-2 text-sm font-bold">
           <CloudCog className={cn("h-4 w-4", status?.running ? "text-profit" : "text-sky-400")} />
-          رانر ۲۴/۷ سرور (Paper)
+          رانر ۲۴/۷ سرور ({isReal ? "Real" : "Paper"})
           {status ? (
             <Badge
               className={cn(
@@ -138,9 +147,8 @@ export function ServerRunnerCard() {
           ) : null}
         </CardTitle>
         <CardDescription className="text-[11px] leading-6">
-          حتی وقتی سیستم شما خاموش است، ربات روی Vercel هر ۱۰ دقیقه بازار را بررسی می‌کند، پوزیشن کاغذی
-          باز/بسته می‌کند و رویدادها را به تلگرام می‌فرستد. معامله واقعی همچنان فقط از موتور محلی و با گیت
-          تأیید شما انجام می‌شود.
+          این صفحه فقط داشبورد است. رانر روی سرور هر ۱۰ دقیقه بازار را بررسی می‌کند و پس از بستن تب هم ادامه
+          می‌دهد. در حالت Real سفارش‌ها فقط با کلید فعال و تأیید ENABLE-REAL-TRADING روی صرافی ثبت می‌شوند.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
@@ -166,12 +174,22 @@ export function ServerRunnerCard() {
               </div>
             </div>
 
+            {status.running && status.tickCount === 0 ? (
+              <p className="flex items-start gap-2 rounded-lg bg-warn/10 px-3 py-2 text-[11px] leading-5 text-warn">
+                <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                رانر روشن است اما هنوز هیچ tick سروری اجرا نشده؛ تا زمانی که شمارنده tick افزایش پیدا نکند،
+                هیچ سیگنال یا پوزیشنی بررسی نمی‌شود. در اجرای محلی سرور را با نسخه جدید restart کنید؛ در
+                serverless نیز Cron را بررسی کنید.
+              </p>
+            ) : null}
+
             {status.positions.length ? (
               <div className="space-y-1.5">
                 <p className="text-[10px] font-bold text-muted-foreground">پوزیشن‌های باز سرور</p>
                 {status.positions.map((p) => (
                   <div key={p.symbol} className="num flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-border/60 bg-secondary/20 px-3 py-2 text-[11px]">
                     <b>{p.symbol}</b>
+                    <Badge className={cn("rounded-full px-2 py-0.5 text-[9px]", p.mode === "real" ? "bg-loss/15 text-loss" : "bg-profit/15 text-profit")}>{p.mode === "real" ? "واقعی" : "Paper"}</Badge>
                     <span>{faNum(p.qty, 6)} @ {faPrice(p.entry)}</span>
                     <span>فعلی {faPrice(p.price)}</span>
                     <span className={p.pnlPct >= 0 ? "text-profit" : "text-loss"}>
@@ -226,13 +244,38 @@ export function ServerRunnerCard() {
               <Square className="ml-1 h-3.5 w-3.5" /> خاموش‌کردن رانر
             </Button>
           ) : (
-            <Button size="sm" className="rounded-full" disabled={busy || !status} onClick={() => void control({ running: true }, "رانر سرور روشن شد — از tick بعدی فعال است.")}>
-              <Play className="ml-1 h-3.5 w-3.5" /> روشن‌کردن رانر ۲۴/۷
-            </Button>
+            isReal ? (
+              <AlertDialog open={startOpen} onOpenChange={setStartOpen}>
+                <AlertDialogTrigger asChild>
+                  <Button size="sm" variant="destructive" className="rounded-full" disabled={busy || !status || !status.realReady}>
+                    <Play className="ml-1 h-3.5 w-3.5" /> روشن‌کردن رانر واقعی ۲۴/۷…
+                  </Button>
+                </AlertDialogTrigger>
+                <AlertDialogContent dir="rtl" className="max-w-md rounded-2xl text-right">
+                  <AlertDialogHeader>
+                    <AlertDialogTitle className="text-sm">اجرای معامله واقعی روی سرور؟</AlertDialogTitle>
+                    <AlertDialogDescription className="text-xs leading-6">
+                      رانر بعد از بستن مرورگر هم فعال می‌ماند و می‌تواند سفارش واقعی خرید و فروش ثبت کند. گیت
+                      ENABLE-REAL-TRADING و محدودیت‌های ریسک سمت سرور همچنان اعمال می‌شوند.
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel className="rounded-full text-xs">انصراف</AlertDialogCancel>
+                    <AlertDialogAction className="rounded-full bg-loss text-white hover:bg-loss/90" onClick={() => void control({ running: true, mode: "real" }, "رانر واقعی سرور روشن شد و پس از بستن مرورگر ادامه می‌دهد.")}>
+                      روشن‌کردن رانر واقعی
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
+            ) : (
+              <Button size="sm" className="rounded-full" disabled={busy || !status} onClick={() => void control({ running: true, mode: "paper" }, "رانر Paper سرور روشن شد و پس از بستن مرورگر ادامه می‌دهد.")}>
+                <Play className="ml-1 h-3.5 w-3.5" /> روشن‌کردن رانر Paper ۲۴/۷
+              </Button>
+            )
           )}
           <AlertDialog open={resetOpen} onOpenChange={setResetOpen}>
             <AlertDialogTrigger asChild>
-              <Button size="sm" variant="destructive" className="rounded-full" disabled={busy}>
+              <Button size="sm" variant="destructive" className="rounded-full" disabled={busy || isReal} title={isReal ? "دفتر Real برای جلوگیری از قطع همگام‌سازی قابل بازنشانی نیست" : undefined}>
                 <RotateCcw className="ml-1 h-3.5 w-3.5" /> بازنشانی حساب رانر
               </Button>
             </AlertDialogTrigger>
@@ -240,8 +283,8 @@ export function ServerRunnerCard() {
               <AlertDialogHeader>
                 <AlertDialogTitle className="text-sm">بازنشانی رانر سرور؟</AlertDialogTitle>
                 <AlertDialogDescription className="text-xs leading-6">
-                  تمام پوزیشن‌ها، معاملات و منحنی سرمایهٔ رانر ۲۴/۷ پاک می‌شود و حساب با سرمایه اولیهٔ
-                  کاغذی از صفر شروع می‌کند. این عمل روی موتور محلی و معامله واقعی تأثیری ندارد.
+                  تمام پوزیشن‌ها، معاملات و منحنی سرمایهٔ Paper رانر ۲۴/۷ پاک می‌شود و حساب با سرمایه اولیهٔ
+                  کاغذی از صفر شروع می‌کند. دفتر Real و سفارش‌های صرافی دست‌نخورده می‌مانند.
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>

@@ -35,6 +35,8 @@ export interface MarketStructure {
 export interface Level {
   price: number;
   kind: "support" | "resistance" | "order_block" | "fvg";
+  /** جهت ناحیه: demand برای ورود خرید، supply برای مانع/خروج */
+  side?: "demand" | "supply";
   strength: number;
   time: number;
 }

@@ -58,6 +58,8 @@ interface RealOrderResult {
 /** وضعیت رانر ۲۴/۷ سرور (خروجی /api/bot/status) برای آینه‌سازی در UI */
 interface ServerRunnerStatus {
   running: boolean;
+  mode: "paper" | "real";
+  realReady: boolean;
   cash: number;
   equity: number;
   peakEquity: number;
@@ -279,19 +281,20 @@ export class BotEngine {
   // ---------- پیکربندی ----------
 
   /** تنظیمات و لیست پایش فعلی برای رانر ۲۴/۷ سرور ارسال می‌شود تا با همان پیکربندی کاربر کار کند */
-  private pushServerConfig(): void {
-    fetch("/api/bot/config", {
+  private async pushServerConfig(): Promise<void> {
+    const response = await fetch("/api/bot/config", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ cfg: this.cfg, symbols: this.symbols }),
-    }).catch(() => undefined);
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
   }
 
   setConfig(cfg: StrategyConfig): void {
     this.cfg = normalizeConfig(cfg);
     saveConfig(this.cfg);
     configureApi(this.cfg);
-    this.pushServerConfig();
+    void this.pushServerConfig().catch(() => undefined);
     this.notify();
   }
 
@@ -299,15 +302,13 @@ export class BotEngine {
     this.symbols = symbols;
     saveSymbols(symbols);
     this.socket.setSymbols(symbols);
-    this.pushServerConfig();
+    void this.pushServerConfig().catch(() => undefined);
     this.notify();
   }
 
   async setMode(mode: "paper" | "real"): Promise<void> {
     if (mode === this.mode) return;
     if (mode === "real") {
-      // معامله واقعی همیشه از موتور محلی انجام می‌شود — از آینهٔ سرور خارج شو
-      if (this.serverMode) this.exitServerMirror();
       // دروازهٔ معامله واقعی از صرافی فعال خوانده می‌شود (نوبیتکس یا رمزینکس)
       const gate = getExchangeProvider() === "ramzinex" ? "/api/ramzinex/keys" : "/api/keys";
       const res = await fetch(gate, { cache: "no-store" }).then((r) => r.json()) as { configured?: boolean; realEnabled?: boolean };
@@ -316,8 +317,38 @@ export class BotEngine {
         this.notify();
         return;
       }
+      if (this.serverMode) {
+        // تغییر دفتر، رانر فعال را سمت سرور متوقف می‌کند. شروع دوباره باید صریح باشد.
+        try {
+          await this.persistMode(mode);
+        } catch (error) {
+          this.notice = `تغییر حالت رانر سرور ناموفق بود: ${(error as Error).message}`;
+          this.notifyUi();
+          return;
+        }
+        this.mode = mode;
+        this.running = false;
+        this.notice = "حالت Real انتخاب شد. برای شروع معامله واقعی ۲۴/۷، رانر سرور را دوباره روشن کنید.";
+        await this.pollServer();
+        this.notifyUi();
+        return;
+      }
       const synced = await this.syncWithExchange();
       if (!synced) return;
+    } else if (this.serverMode) {
+      try {
+        await this.persistMode(mode);
+      } catch (error) {
+        this.notice = `تغییر حالت رانر سرور ناموفق بود: ${(error as Error).message}`;
+        this.notifyUi();
+        return;
+      }
+      this.mode = mode;
+      this.running = false;
+      this.notice = "حالت Paper انتخاب شد. برای شروع پایش ۲۴/۷، رانر سرور را دوباره روشن کنید.";
+      await this.pollServer();
+      this.notifyUi();
+      return;
     }
     this.persist();
     this.mode = mode;
@@ -327,16 +358,20 @@ export class BotEngine {
       this.revalueRealCash();
     }
     this.notify();
-    this.persistMode(mode);
+    await this.persistMode(mode);
   }
 
   /** حالت معامله روی سرور ذخیره می‌شود تا پس از refresh هم حفظ بماند */
-  private persistMode(mode: "paper" | "real"): void {
-    fetch("/api/mode", {
+  private async persistMode(mode: "paper" | "real"): Promise<void> {
+    const response = await fetch("/api/mode", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ mode }),
-    }).catch(() => undefined);
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => null) as { statusMessage?: string; message?: string } | null;
+      throw new Error(body?.statusMessage ?? body?.message ?? `HTTP ${response.status}`);
+    }
   }
 
   /**
@@ -496,33 +531,41 @@ export class BotEngine {
 
   // ---------- زمان‌بندی ----------
 
-  start(): void {
-    if (this.running) return;
-    this.running = true;
-    void this.bootstrap();
+  /** اتصال داشبورد به رانر سرور؛ هیچ حلقه معامله‌ای در مرورگر اجرا نمی‌شود. */
+  observeServer(): void {
+    this.enterServerMirror();
   }
 
-  /**
-   * اگر رانر ۲۴/۷ سرور در حال اجراست (و حالت paper است)، موتور محلی تیک نمی‌زند
-   * و فقط وضعیت سرور را هر ۱۵ ثانیه آینه می‌کند؛ وگرنه حلقهٔ محلی شروع می‌شود.
-   */
-  private async bootstrap(): Promise<void> {
-    if (this.mode === "paper") {
-      try {
-        const res = await fetch("/api/bot/status", { cache: "no-store" });
-        if (res.ok) {
-          const status = (await res.json()) as ServerRunnerStatus;
-          if (status.running) {
-            this.applyServerStatus(status);
-            this.enterServerMirror();
-            return;
-          }
-        }
-      } catch {
-        /* سرور در دسترس نیست — حالت محلی */
+  /** شروع رانر ۲۴/۷ سمت سرور در دفتر انتخاب‌شده (Paper یا Real). */
+  start(): void {
+    if (this.busy || this.running) return;
+    void this.controlServer(true);
+  }
+
+  private async controlServer(running: boolean): Promise<void> {
+    this.busy = true;
+    try {
+      if (running) await this.pushServerConfig();
+      const response = await fetch("/api/bot/control", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ running, mode: this.mode }),
+      });
+      const data = await response.json().catch(() => null) as (ServerRunnerStatus & { statusMessage?: string; message?: string }) | null;
+      if (!response.ok || !data) {
+        throw new Error(data?.statusMessage ?? data?.message ?? `HTTP ${response.status}`);
       }
+      this.applyServerStatus(data);
+      this.enterServerMirror();
+      this.notice = running
+        ? `رانر ${this.mode === "real" ? "Real" : "Paper"} روی سرور روشن شد و با بستن مرورگر ادامه می‌دهد.`
+        : "رانر سرور خاموش شد.";
+    } catch (error) {
+      this.notice = `کنترل رانر سرور ناموفق بود: ${(error as Error).message}`;
+    } finally {
+      this.busy = false;
+      this.notifyUi();
     }
-    this.startLocal();
   }
 
   private startLocal(): void {
@@ -530,31 +573,25 @@ export class BotEngine {
     this.socket.start(this.symbols);
     this.scheduleNext();
     this.timer = setInterval(() => {
-      if (this.nextTick && Date.now() >= this.nextTick) void this.tick();
+      if (this.nextTick && Date.now() >= this.nextTick) void this.tickLocal();
     }, 20_000);
     this.notify();
     void this.tick();
   }
 
   private enterServerMirror(): void {
+    if (this.serverMode && this.serverTimer) {
+      void this.pollServer();
+      return;
+    }
     this.serverMode = true;
-    this.pushServerConfig();
     this.socket.stop();
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
-    this.serverTimer = setInterval(() => void this.pollServer(), 15_000);
-    this.notice = "رانر ۲۴/۷ سمت سرور فعال است — همهٔ نتیجه‌ها (سیگنال/خرید/فروش) از سرور آینه می‌شوند.";
-    this.notifyUi();
-  }
-
-  private exitServerMirror(): void {
     if (this.serverTimer) clearInterval(this.serverTimer);
-    this.serverTimer = null;
-    this.serverMode = false;
-    this.serverInfo = null;
-    // دفتر محلی از حافظهٔ مرورگر بازیابی می‌شود تا دادهٔ سرور در آن persist نشود
-    this.loadPortfolio(this.mode);
-    this.startLocal();
+    void this.pollServer();
+    this.serverTimer = setInterval(() => void this.pollServer(), 15_000);
+    this.notifyUi();
   }
 
   private async pollServer(): Promise<void> {
@@ -562,10 +599,6 @@ export class BotEngine {
       const res = await fetch("/api/bot/status", { cache: "no-store" });
       if (!res.ok) return;
       const status = (await res.json()) as ServerRunnerStatus;
-      if (!status.running) {
-        this.exitServerMirror();
-        return;
-      }
       this.applyServerStatus(status);
       this.notifyUi();
     } catch {
@@ -580,6 +613,9 @@ export class BotEngine {
 
   /** نگاشت خروجی /api/bot/status به فیلدهای موتور تا همهٔ صفحات UI بدون تغییر کار کنند */
   private applyServerStatus(s: ServerRunnerStatus): void {
+    // حالت واقعی/کاغذی را سرور تعیین می‌کند (گیت ENABLE-REAL-TRADING سمت سرور است)
+    this.mode = s.mode;
+    this.running = s.running;
     this.cash = s.cash;
     this.peakEquity = s.peakEquity;
     this.positions = s.full.positions.map((p) => ({ ...p, symbol: this.uiSymbol(p.symbol) }));
@@ -601,20 +637,10 @@ export class BotEngine {
     };
   }
 
+  /** توقف نیز به سرور ارسال می‌شود؛ داشبورد برای مشاهده وضعیت متصل می‌ماند. */
   stop(): void {
-    this.running = false;
-    this.socket.stop();
-    if (this.timer) clearInterval(this.timer);
-    this.timer = null;
-    if (this.serverTimer) clearInterval(this.serverTimer);
-    this.serverTimer = null;
-    if (this.serverMode) {
-      this.serverMode = false;
-      this.serverInfo = null;
-      this.loadPortfolio(this.mode);
-    }
-    this.nextTick = null;
-    this.notify();
+    if (this.busy || !this.running) return;
+    void this.controlServer(false);
   }
 
   private scheduleNext(): void {
@@ -626,7 +652,26 @@ export class BotEngine {
 
   // ---------- حلقه اصلی ----------
 
+  /** اجرای فوری یک tick روی سرور؛ مرورگر فقط درخواست کنترل می‌فرستد و نتیجه را نمایش می‌دهد. */
   async tick(): Promise<void> {
+    if (this.busy) return;
+    this.busy = true;
+    try {
+      const response = await fetch("/api/cron/tick", { cache: "no-store" });
+      const body = await response.json().catch(() => null) as { skipped?: string; statusMessage?: string; message?: string } | null;
+      if (!response.ok) throw new Error(body?.statusMessage ?? body?.message ?? `HTTP ${response.status}`);
+      if (body?.skipped === "stopped") this.notice = "رانر سرور خاموش است؛ ابتدا آن را روشن کنید.";
+      await this.pollServer();
+    } catch (error) {
+      this.notice = `tick سرور ناموفق بود: ${(error as Error).message}`;
+    } finally {
+      this.busy = false;
+      this.notifyUi();
+    }
+  }
+
+  /** موتور قدیمی مرورگر فقط برای سازگاری کد نگه داشته شده و از UI فراخوانی نمی‌شود. */
+  private async tickLocal(): Promise<void> {
     if (this.busy || this.serverMode) return;
     this.busy = true;
     try {

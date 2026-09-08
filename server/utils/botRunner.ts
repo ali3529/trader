@@ -1,7 +1,9 @@
 import { readState, writeState } from "./stateStore";
 import { getExchangeProvider } from "./exchangePrefs";
-import { publicGet } from "./nobitex";
-import { fetchCandles as ramzinexCandles } from "./ramzinex";
+import { getBotMode, type BotMode } from "./botMode";
+import { loadKeys, privateRequest, publicGet } from "./nobitex";
+import { fetchAccount as rzFetchAccount, fetchCandles as ramzinexCandles, loadRamzinexKeys } from "./ramzinex";
+import { submitRealOrder } from "./orderExecution";
 import {
   formatClose,
   formatDigest,
@@ -27,12 +29,16 @@ import { computePositionSize, drawdownPct, managePosition, positionEquity, riskS
  * (managePosition + خروج CHoCH/تأیید نزولی) مدیریت می‌شوند و همه‌چیز در
  * stateStore رمزنگاری‌شده باقی می‌ماند تا بین cold startها حفظ شود.
  *
- * امنیت: رانر سرور فقط کاغذی است. معامله واقعی همچنان از موتور کلاینت و با
- * گیت ENABLE-REAL-TRADING انجام می‌شود. هرگز از داده demo استفاده نمی‌کند —
- * اگر بازار واقعی در دسترس نباشد، نماد با یادداشت رد می‌شود.
+ * امنیت: رانر سرور به‌طور پیش‌فرض کاغذی است. معامله واقعی از سرور فقط وقتی
+ * انجام می‌شود که کاربر هر دو گیت را صریحاً روشن کرده باشد: حالت «real»
+ * (ذخیره‌شده در سرور از مسیر تأیید ENABLE-REAL-TRADING) + realEnabled کلیدهای
+ * صرافی فعال. همان سقف‌های ریسک و تأیید fill سفارش‌ها (orderExecution) اعمال
+ * می‌شود و در ابهام، دفتر داخلی هرگز تغییر نمی‌کند. هرگز از داده demo استفاده
+ * نمی‌شود — اگر بازار واقعی در دسترس نباشد، نماد با یادداشت رد می‌شود.
  */
 
-const STATE_FILE = "bot-runner.json";
+const LEGACY_STATE_FILE = "bot-runner.json";
+const stateFile = (mode: BotMode): string => `bot-runner-${mode}.json`;
 const CONFIG_FILE = "bot-runner-config.json";
 const BATCH_SIZE = 2; // نماد جدید در هر tick — سقف زمان تابع serverless
 const LOCK_MS = 9 * 60_000; // جلوگیری از tick هم‌پوشان (cron موازی)
@@ -122,27 +128,44 @@ export async function saveRunnerConfig(cfg: StrategyConfig, symbols: string[]): 
   } satisfies RunnerConfig);
 }
 
-export async function loadRunnerState(): Promise<RunnerState> {
+export async function loadRunnerState(mode?: BotMode): Promise<RunnerState> {
+  const selectedMode = mode ?? await getBotMode();
   const { cfg } = await loadRunnerConfig();
-  const stored = await readState<Partial<RunnerState> | null>(STATE_FILE, null);
+  let stored = await readState<Partial<RunnerState> | null>(stateFile(selectedMode), null);
+  // نسخه‌های قبلی فقط یک دفتر داشتند و آن دفتر همیشه Paper بوده است.
+  if (!stored && selectedMode === "paper") {
+    stored = await readState<Partial<RunnerState> | null>(LEGACY_STATE_FILE, null);
+  }
   if (!stored) return freshState(cfg);
   return { ...freshState(cfg), ...stored } as RunnerState;
 }
 
-async function saveRunnerState(state: RunnerState): Promise<void> {
-  await writeState(STATE_FILE, state);
+async function saveRunnerState(state: RunnerState, mode: BotMode): Promise<void> {
+  await writeState(stateFile(mode), state);
 }
 
-export async function setRunnerRunning(running: boolean): Promise<void> {
-  const state = await loadRunnerState();
+export async function setRunnerRunning(running: boolean, mode?: BotMode): Promise<void> {
+  const selectedMode = mode ?? await getBotMode();
+  const state = await loadRunnerState(selectedMode);
   state.running = running;
   if (!running) state.tickLockAt = null;
-  await saveRunnerState(state);
+  await saveRunnerState(state, selectedMode);
+
+  // فقط یک دفتر می‌تواند فعال باشد؛ Paper و Real هرگز در یک چرخه مخلوط نمی‌شوند.
+  if (running) {
+    const otherMode: BotMode = selectedMode === "real" ? "paper" : "real";
+    const other = await loadRunnerState(otherMode);
+    if (other.running) {
+      other.running = false;
+      other.tickLockAt = null;
+      await saveRunnerState(other, otherMode);
+    }
+  }
 }
 
-export async function resetRunner(): Promise<void> {
+export async function resetRunner(mode: BotMode = "paper"): Promise<void> {
   const { cfg } = await loadRunnerConfig();
-  await saveRunnerState(freshState(cfg));
+  await saveRunnerState(freshState(cfg), mode);
 }
 
 /** نوتیفیکیشن با احترام به سوئیچ‌های تلگرام (سیگنال/پوزیشن/گزارش) */
@@ -152,6 +175,138 @@ async function notify(kind: "signals" | "positions" | "digest", text: string): P
   if (kind === "positions" && !tg.notifyPositions) return;
   if (kind === "digest" && !tg.notifyDigest) return;
   await sendTelegram(text);
+}
+
+/* ------------------------------ گیت معامله واقعی ------------------------------ */
+
+/**
+ * معامله واقعی روی سرور فقط با روشن‌بودن هم‌زمان دو گیت صریح کاربر:
+ * ۱) حالت ربات «real» باشد (از مسیر تأیید ENABLE-REAL-TRADING در UI ذخیره شده)
+ * ۲) کلیدهای صرافی فعال realEnabled باشند.
+ * در صورت بسته‌شدن هر گیت، tick حالت Real به‌صورت fail-closed متوقف می‌شود.
+ */
+export async function realGateActive(): Promise<boolean> {
+  if ((await getBotMode()) !== "real") return false;
+  return exchangeRealEnabled();
+}
+
+/** وضعیت گیت کلیدهای صرافی فعال، مستقل از انتخاب فعلی mode. */
+export async function exchangeRealEnabled(): Promise<boolean> {
+  if ((await getExchangeProvider()) === "ramzinex") {
+    return (await loadRamzinexKeys())?.realEnabled === true;
+  }
+  return (await loadKeys())?.realEnabled === true;
+}
+
+/** قرارداد دفتر سفارش‌ها و UI نماد IRT است (رمزینکس هم با IRT فراخوانی می‌شود و نگاشت داخلی دارد) */
+const toTradeSymbol = (symbol: string): string => symbol.replace(/IRR$/, "IRT");
+
+interface RealOrderInput {
+  symbol: string;
+  side: "buy" | "sell";
+  qty: number;
+  price: number;
+  stop?: number;
+  positionId: string;
+  target?: number;
+  rr?: number;
+  atr?: number;
+  signalTime?: number;
+  signalScore?: number;
+  reason: string;
+}
+
+/**
+ * ثبت سفارش واقعی با همان مسیر امن route (صف سریال + سقف ریسک + تأیید fill).
+ * در رد/ابهام: دفتر داخلی تغییر نمی‌کند، یادداشت + هشدار تلگرام و null.
+ */
+async function placeRealOrder(
+  notes: string[],
+  input: RealOrderInput,
+): Promise<{ qty: number; price: number } | null> {
+  const tradeSymbol = toTradeSymbol(input.symbol);
+  const clientOrderId = `tb-${input.side}-${tradeSymbol}-${Date.now().toString(36)}`.slice(0, 64);
+  try {
+    const res = await submitRealOrder({
+      symbol: tradeSymbol,
+      side: input.side,
+      type: "market",
+      qty: input.qty,
+      price: input.price,
+      stop: input.stop,
+      clientOrderId,
+      positionId: toTradeSymbol(input.positionId),
+      target: input.target,
+      rr: input.rr,
+      atr: input.atr,
+      signalTime: input.signalTime,
+      signalScore: input.signalScore,
+      reason: input.reason,
+    });
+    if (res.reconciliationRequired || res.filledQuantity <= 0 || res.averagePrice <= 0) {
+      notes.push(`${input.symbol}: سفارش واقعی (${input.reason}) قطعی نشد — دفتر تغییر نکرد`);
+      await sendTelegram(
+        `⚠️ <b>سفارش واقعی ${esc(input.symbol)} مبهم ماند</b>\n${esc(input.reason)} — وضعیت: ${esc(res.orderStatus)}؛ همگام‌سازی دستی لازم است.`,
+      ).catch(() => undefined);
+      return null;
+    }
+    return { qty: Math.min(input.qty, res.filledQuantity), price: res.averagePrice };
+  } catch (err) {
+    const e = err as Error & { statusMessage?: string };
+    const message = e.statusMessage ?? e.message;
+    notes.push(`${input.symbol}: سفارش واقعی رد شد — ${message}`);
+    await sendTelegram(
+      `⚠️ <b>رد سفارش واقعی ${esc(input.symbol)}</b>\n${esc(input.reason)}: ${esc(message)}`,
+    ).catch(() => undefined);
+    return null;
+  }
+}
+
+/** ارزش‌دهی مجدد نقد از کیف پول صرافی در حالت واقعی: cash = ارزش صرافی − ارزش بازار پوزیشن‌ها */
+async function revalueRealCash(state: RunnerState, required = false): Promise<boolean> {
+  try {
+    const provider = await getExchangeProvider();
+    const totals: Record<string, number> = {};
+    if (provider === "ramzinex") {
+      const acc = await rzFetchAccount();
+      Object.assign(totals, acc.totalBalances);
+    } else {
+      const res = (await privateRequest("GET", "/v2/wallets", { query: { type: "spot" } })) as {
+        wallets?: Record<string, { balance?: string | number }>;
+      };
+      for (const [coin, wallet] of Object.entries(res.wallets ?? {})) {
+        totals[coin.toUpperCase()] = Number(wallet?.balance ?? 0);
+      }
+    }
+    let equityToman = 0;
+    for (const [coin, amount] of Object.entries(totals)) {
+      if (!Number.isFinite(amount) || amount <= 0) continue;
+      if (coin === "RLS" || coin === "IRR") equityToman += amount / 10;
+      else if (coin === "IRT") equityToman += amount;
+      else {
+        const price = state.lastPrices[`${coin}IRT`] ?? state.lastPrices[`${coin}IRR`];
+        if (price && Number.isFinite(price)) equityToman += amount * price;
+      }
+    }
+    const marketValue = state.positions.reduce(
+      (sum, p) => sum + p.qty * (state.lastPrices[p.symbol] ?? p.entry),
+      0,
+    );
+    state.cash = Math.max(0, equityToman - marketValue);
+    const initializing = state.tickCount === 0 && state.positions.length === 0 && state.trades.length === 0;
+    if (initializing) {
+      state.initialCapital = equityToman;
+      state.peakEquity = equityToman;
+      state.equity = [{ time: Date.now(), equity: equityToman }];
+    } else {
+      state.peakEquity = Math.max(state.peakEquity, equityToman);
+    }
+    return true;
+  } catch (error) {
+    // کیف پول خوانده نشد — دفتر داخلی حفظ می‌شود
+    if (required) throw error;
+    return false;
+  }
 }
 
 /* --------------------------------- کندل بسته --------------------------------- */
@@ -231,26 +386,87 @@ function currentEquity(state: RunnerState): number {
   );
 }
 
-async function closePosition(
+/**
+ * اجرای خروج: کاغذی با لغزش شبیه‌سازی‌شده؛ واقعی با سفارش sell روی صرافی فعال.
+ * در سفارش واقعی ناموفق/مبهم، پوزیشن باز می‌ماند و دفتر تغییر نمی‌کند.
+ * fill ناقص → پوزیشن با مقدار باقی‌مانده و leg ثبت‌شده ادامه می‌یابد.
+ */
+async function executeClose(
   state: RunnerState,
   p: Position,
   price: number,
   reason: Trade["exitReason"],
   time: number,
   cfg: StrategyConfig,
+  notes: string[],
 ): Promise<void> {
-  const fill = price * (1 - cfg.slippagePct / 100);
-  const exitValue = fill * p.qty;
+  let fill = price * (1 - cfg.slippagePct / 100);
+  let closedQty = p.qty;
+  if (p.mode === "real") {
+    const executed = await placeRealOrder(notes, {
+      symbol: p.symbol,
+      side: "sell",
+      qty: p.qty,
+      price,
+      positionId: p.id,
+      reason: EXIT_LABEL[reason],
+    });
+    if (!executed) return;
+    fill = executed.price;
+    closedQty = executed.qty;
+  }
+  if (closedQty < p.qty * (1 - 1e-8)) {
+    const fee = closedQty * fill * (cfg.feePct / 100);
+    state.cash += closedQty * fill - fee;
+    const remainingQty = p.qty - closedQty;
+    state.positions = state.positions.map((item) =>
+      item.id === p.id
+        ? {
+            ...item,
+            qty: remainingQty,
+            notional: remainingQty * p.entry,
+            legs: [
+              ...item.legs,
+              {
+                qty: closedQty,
+                price: fill,
+                time,
+                reason: `${EXIT_LABEL[reason]} (اجرای ناقص)`,
+                pnl: (fill - p.entry) * closedQty - fee,
+                fee,
+              },
+            ],
+          }
+        : item,
+    );
+    notes.push(`${p.symbol}: فقط بخشی از خروج واقعی انجام شد؛ ${remainingQty} واحد هنوز باز است`);
+    return;
+  }
+  await closePosition(state, p, fill, closedQty, reason, time, cfg);
+}
+
+async function closePosition(
+  state: RunnerState,
+  p: Position,
+  fill: number,
+  closedQty: number,
+  reason: Trade["exitReason"],
+  time: number,
+  cfg: StrategyConfig,
+): Promise<void> {
+  const exitValue = fill * closedQty;
   const exitFee = exitValue * (cfg.feePct / 100);
   state.cash += exitValue - exitFee;
 
   const partialPnl = p.legs.reduce((a, l) => a + l.pnl, 0);
-  const finalPnl = (fill - p.entry) * p.qty - exitFee;
-  const totalQty = p.qty + p.legs.reduce((a, l) => a + l.qty, 0);
+  const partialExitFees = p.legs.reduce((a, l) => a + (l.fee ?? 0), 0);
+  const finalPnl = (fill - p.entry) * closedQty - exitFee;
+  const totalQty = closedQty + p.legs.reduce((a, l) => a + l.qty, 0);
   const entryNotional = totalQty * p.entry;
   const entryFee = entryNotional * (cfg.feePct / 100);
-  const totalPnl = partialPnl + finalPnl;
-  const exitValueAll = p.legs.reduce((a, l) => a + l.qty * l.price, 0) + p.qty * fill;
+  // pnl هر leg کارمزد خروج همان leg را دارد؛ کارمزد ورود فقط یک بار اینجا کم می‌شود.
+  const totalPnl = partialPnl + finalPnl - entryFee;
+  const exitValueAll = p.legs.reduce((a, l) => a + l.qty * l.price, 0) + closedQty * fill;
   const avgExit = totalQty > 0 ? exitValueAll / totalQty : fill;
   const riskPerUnit = p.entry - p.initialStop;
 
@@ -264,19 +480,19 @@ async function closePosition(
     qty: totalQty,
     pnl: totalPnl,
     pnlPct: entryNotional > 0 ? (totalPnl / entryNotional) * 100 : 0,
-    fees: entryFee + exitFee,
+    fees: entryFee + partialExitFees + exitFee,
     rrPlanned: p.rr,
     rrActual: riskPerUnit > 0 ? (avgExit - p.entry) / riskPerUnit : 0,
     exitReason: reason,
     entryReason: `سیگنال Price Action با امتیاز ${p.signalScore}/۸`,
-    mode: "paper",
-    legs: [...p.legs, { qty: p.qty, price: fill, time, reason: EXIT_LABEL[reason], pnl: finalPnl, fee: exitFee }],
+    mode: p.mode,
+    legs: [...p.legs, { qty: closedQty, price: fill, time, reason: EXIT_LABEL[reason], pnl: finalPnl, fee: exitFee }],
     holdMs: Math.max(0, time - p.openedAt),
   };
   state.trades.push(trade);
   if (state.trades.length > 500) state.trades = state.trades.slice(-500);
   state.positions = state.positions.filter((x) => x.id !== p.id);
-  state.lastPrices[p.symbol] = price;
+  state.lastPrices[p.symbol] = fill;
 
   await notify(
     "positions",
@@ -288,7 +504,7 @@ async function closePosition(
       pnl: totalPnl,
       pnlPct: trade.pnlPct,
       exitReason: EXIT_LABEL[reason],
-      mode: "paper",
+      mode: p.mode,
       holdMs: trade.holdMs,
       time,
     }),
@@ -302,6 +518,8 @@ async function manageSymbol(
   c1h: Candle[],
   c4h: Candle[],
   cfg: StrategyConfig,
+  real: boolean,
+  notes: string[],
 ): Promise<void> {
   const position = state.positions.find((p) => p.symbol === symbol);
   if (position) {
@@ -318,19 +536,47 @@ async function manageSymbol(
       const atr1h = lastAtr(c1h, cfg.atrPeriod) ?? current.atr;
       const result = managePosition(current, candle, atr1h, cfg);
       if (result.stopHit) {
-        await closePosition(state, current, result.stopHit.price, result.stopHit.reason, candle.time, cfg);
+        await executeClose(state, current, result.stopHit.price, result.stopHit.reason, candle.time, cfg, notes);
         break;
       }
       if (result.partialClose && result.position) {
         const part = result.partialClose;
-        const fee = part.qty * part.price * (cfg.feePct / 100);
-        state.cash += part.qty * part.price - fee;
+        let qty = part.qty;
+        let price = part.price;
+        if (current.mode === "real") {
+          const executed = await placeRealOrder(notes, {
+            symbol: current.symbol,
+            side: "sell",
+            qty: part.qty,
+            price: part.price,
+            positionId: current.id,
+            reason: "خروج جزئی",
+          });
+          if (!executed) break; // پوزیشن بدون تغییر می‌ماند؛ کندل بعدی دوباره تلاش می‌کند
+          qty = executed.qty;
+          price = executed.price;
+        }
+        const fee = qty * price * (cfg.feePct / 100);
+        state.cash += qty * price - fee;
         const legs = result.position.legs.slice();
         const lastIdx = legs.length - 1;
         if (lastIdx >= 0 && legs[lastIdx].time === 0) {
-          legs[lastIdx] = { ...legs[lastIdx], time: candle.time, fee, pnl: legs[lastIdx].pnl - fee };
+          legs[lastIdx] = {
+            qty,
+            price,
+            time: candle.time,
+            reason: legs[lastIdx].reason,
+            fee,
+            pnl: (price - current.entry) * qty - fee,
+          };
         }
-        const updated: Position = { ...result.position, legs };
+        const remainingQty = Math.max(0, current.qty - qty);
+        const updated: Position = {
+          ...result.position,
+          qty: remainingQty,
+          notional: remainingQty * current.entry,
+          legs,
+        };
         state.positions = state.positions.map((p) => (p.id === current.id ? updated : p));
         continue;
       }
@@ -344,7 +590,7 @@ async function manageSymbol(
     if (still) {
       const lastPrice = c1h[c1h.length - 1].close;
       if (chochDown) {
-        await closePosition(state, still, lastPrice, "choch_down", Date.now(), cfg);
+        await executeClose(state, still, lastPrice, "choch_down", Date.now(), cfg, notes);
       } else {
         const atr1h = lastAtr(c1h, cfg.atrPeriod) ?? still.atr;
         const levels = allLevels(c1h, atr1h, cfg);
@@ -352,7 +598,7 @@ async function manageSymbol(
         const nearResistance = resistance !== null && Math.abs(resistance.price - lastPrice) <= cfg.levelProximityAtr * atr1h;
         const bearish = detectBearishPatterns(c1h, cfg);
         if (nearResistance && bearish.length) {
-          await closePosition(state, still, lastPrice, "bearish_confirmation", Date.now(), cfg);
+          await executeClose(state, still, lastPrice, "bearish_confirmation", Date.now(), cfg, notes);
         }
       }
     }
@@ -407,7 +653,7 @@ async function manageSymbol(
       pattern: signal.pattern,
       volumeRatio: signal.volumeRatio,
       time: signal.time,
-      mode: "paper (سرور ۲۴/۷)",
+      mode: real ? "real (سرور ۲۴/۷)" : "paper (سرور ۲۴/۷)",
     }),
   );
   if (!signal.qualified) return;
@@ -428,15 +674,40 @@ async function manageSymbol(
     return;
   }
 
-  const fill = signal.entry * (1 + cfg.slippagePct / 100);
-  const notional = sizing.qty * fill;
+  let fill = signal.entry * (1 + cfg.slippagePct / 100);
+  let qty = sizing.qty;
+  let posMode: Position["mode"] = "paper";
+  if (real) {
+    const executed = await placeRealOrder(notes, {
+      symbol,
+      side: "buy",
+      qty: sizing.qty,
+      price: signal.entry,
+      stop: signal.stop,
+      positionId: `${symbol}-${signal.time}`,
+      target: signal.target,
+      rr: signal.rr,
+      atr: signal.atr1h,
+      signalTime: signal.time,
+      signalScore: signal.score,
+      reason: "ورود سیگنال Price Action (رانر سرور)",
+    });
+    if (!executed) {
+      state.scans[symbol] = { ...state.scans[symbol]!, status: "blocked", note: "سفارش واقعی قطعی نشد — ورود انجام نشد" };
+      return;
+    }
+    fill = executed.price;
+    qty = executed.qty;
+    posMode = "real";
+  }
+  const notional = qty * fill;
   const fee = notional * (cfg.feePct / 100);
   state.cash -= notional + fee;
   const opened: Position = {
     id: `${symbol}-${signal.time}`,
     symbol,
     side: "buy",
-    qty: sizing.qty,
+    qty,
     entry: fill,
     stop: signal.stop,
     initialStop: signal.stop,
@@ -449,7 +720,7 @@ async function manageSymbol(
     partialDone: false,
     notional,
     legs: [],
-    mode: "paper",
+    mode: posMode,
     signalScore: signal.score,
   };
   state.positions.push(opened);
@@ -459,13 +730,13 @@ async function manageSymbol(
     "positions",
     formatOpen({
       symbol,
-      qty: sizing.qty,
+      qty,
       entry: fill,
       stop: signal.stop,
       target: signal.target,
       rr: signal.rr,
       score: signal.score,
-      mode: "paper",
+      mode: posMode,
       time: opened.openedAt,
     }),
   );
@@ -485,7 +756,8 @@ export interface TickResult {
 
 export async function runnerTick(): Promise<TickResult> {
   const started = Date.now();
-  const state = await loadRunnerState();
+  const mode = await getBotMode();
+  const state = await loadRunnerState(mode);
   const { cfg, symbols } = await loadRunnerConfig();
   if (!state.running) return { ok: false, skipped: "stopped" };
   // قفل هم‌پوشانی: اگر tick دیگری در جریان است (cron موازی) رد می‌شویم؛
@@ -494,30 +766,45 @@ export async function runnerTick(): Promise<TickResult> {
   if (state.lastTickAt && started - state.lastTickAt < 60_000) return { ok: false, skipped: "too-soon" };
 
   const provider = await getExchangeProvider();
+  // Fail closed: اگر کاربر Real را انتخاب کرده ولی گیت کلید بسته شده باشد،
+  // رانر به Paper برنمی‌گردد و هیچ معامله‌ای انجام نمی‌دهد.
+  const real = mode === "real";
+  if (real && !(await exchangeRealEnabled())) {
+    state.lastError = "گیت معامله واقعی صرافی فعال بسته است؛ tick بدون معامله متوقف شد";
+    state.lastNotes = [state.lastError];
+    state.lastTickAt = started;
+    await saveRunnerState(state, mode);
+    return { ok: false, skipped: "real-gate-closed", notes: state.lastNotes };
+  }
   state.tickLockAt = started;
-  await saveRunnerState(state);
+  await saveRunnerState(state, mode);
 
   const notes: string[] = [];
   try {
+    // سایزبندی اولین سفارش واقعی باید بر پایه موجودی صرافی باشد، نه سرمایه Paper.
+    if (real) await revalueRealCash(state, true);
+
     const watch = Array.from(new Set(symbols.map((s) => toProviderSymbol(s, provider))));
     const openSymbols = state.positions.map((p) => p.symbol);
     const pool = watch.filter((s) => !openSymbols.includes(s));
     const slice = pool.slice(state.cursor, state.cursor + BATCH_SIZE);
     state.cursor = pool.length ? (state.cursor + BATCH_SIZE) % pool.length : 0;
     const batch = Array.from(new Set([...openSymbols, ...slice]));
+    // برای Grid سی‌روزه، ۷۲۱ کندل مرزی به‌علاوه حاشیهٔ کندل زنده لازم است.
+    const hourlyHistoryCount = Math.max(220, cfg.gridLookbackDays * 24 + 2);
 
     for (const symbol of batch) {
       try {
         const [c15, c1h, c4h] = await Promise.all([
           closedCandles(symbol, "15m", 120),
-          closedCandles(symbol, "1h", 220),
+          closedCandles(symbol, "1h", hourlyHistoryCount),
           closedCandles(symbol, "4h", 200),
         ]);
         if (!c15.length || !c1h.length || !c4h.length) {
           notes.push(`${symbol}: کندل زنده‌ای دریافت نشد`);
           continue;
         }
-        await manageSymbol(state, symbol, c15, c1h, c4h, cfg);
+        await manageSymbol(state, symbol, c15, c1h, c4h, cfg, real, notes);
       } catch (err) {
         const message = (err as Error).message;
         notes.push(`${symbol}: ${message}`);
@@ -534,6 +821,21 @@ export async function runnerTick(): Promise<TickResult> {
         };
       }
     }
+
+    // رتبه‌بندی مستقل نمادهای اسکن‌شده بر پایه ارزش معاملات ۲۴ ساعته.
+    const scans = Object.values(state.scans);
+    scans.forEach((scan) => {
+      scan.liquidityRank = 0;
+    });
+    scans
+      .filter((scan) => Number.isFinite(scan.volume24h) && scan.volume24h > 0)
+      .sort((a, b) => b.volume24h - a.volume24h)
+      .forEach((scan, index) => {
+        scan.liquidityRank = index + 1;
+      });
+
+    // پس از تغییر قیمت‌ها، ارزش حساب واقعی دوباره محاسبه می‌شود.
+    if (real) await revalueRealCash(state);
 
     const equity = currentEquity(state);
     state.peakEquity = Math.max(state.peakEquity, equity);
@@ -591,18 +893,21 @@ export async function runnerTick(): Promise<TickResult> {
   } finally {
     state.tickLockAt = null;
     state.lastNotes = notes.slice(0, 12);
-    await saveRunnerState(state).catch(() => undefined);
+    await saveRunnerState(state, mode).catch(() => undefined);
   }
 }
 
 /* ---------------------------------- وضعیت ---------------------------------- */
 
 export async function runnerStatus() {
-  const state = await loadRunnerState();
+  const mode = await getBotMode();
+  const state = await loadRunnerState(mode);
   const equity = currentEquity(state);
   return {
     running: state.running,
-    mode: "paper" as const,
+    mode,
+    /** در حالت Real اگر این مقدار false شود، tick به‌صورت fail-closed متوقف می‌شود. */
+    realReady: mode === "real" ? await exchangeRealEnabled() : false,
     cash: state.cash,
     equity,
     peakEquity: state.peakEquity,
@@ -617,6 +922,7 @@ export async function runnerStatus() {
         stop: p.stop,
         target: p.target,
         openedAt: p.openedAt,
+        mode: p.mode,
         pnlPct: p.entry > 0 ? ((price - p.entry) / p.entry) * 100 : 0,
       };
     }),

@@ -1,8 +1,10 @@
 import { defineHandler } from "nitro";
 import { loadRamzinexKeys } from "../../../utils/ramzinex";
+import { assertSensitiveRequest } from "../../../utils/requestSecurity";
 
 /** وضعیت کلیدهای رمزینکس بدون افشای مقدار — فقط ماسک‌شده */
-export default defineHandler(async () => {
+export default defineHandler(async (event) => {
+  assertSensitiveRequest(event);
   const keys = await loadRamzinexKeys();
   if (!keys) return { configured: false, maskedKey: null, realEnabled: false };
   return {

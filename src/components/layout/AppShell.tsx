@@ -12,8 +12,6 @@ import {
   Settings,
   Square,
   Wallet,
-  Wifi,
-  WifiOff,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
@@ -63,7 +61,6 @@ function StatusStrip() {
   const engine = useEngine();
   const stats = useEngineState((e) => e.stats());
   const serverMode = useEngineState((e) => e.serverMode);
-  const ws = useEngineState((e) => ({ ...e.websocket }));
   const dataSource = useDataSource();
   const provider = useExchangeProvider();
 
@@ -93,7 +90,7 @@ function StatusStrip() {
       {serverMode ? (
         <Badge className="rounded-full bg-primary/15 px-3 py-1 text-xs text-primary">
           <CloudCog className="ml-1 h-3.5 w-3.5" />
-          رانر سرور ۲۴/۷ — نتایج از سرور
+          {stats.running ? "رانر سرور ۲۴/۷ — فعال" : "داشبورد متصل به سرور — رانر خاموش"}
         </Badge>
       ) : (
         <Badge variant="outline" className="rounded-full border-border/70 px-3 py-1 text-xs text-muted-foreground">
@@ -101,21 +98,6 @@ function StatusStrip() {
           {stats.running ? "در حال پایش بازار" : "متوقف"}
         </Badge>
       )}
-      <Badge
-        variant="outline"
-        className={cn(
-          "rounded-full px-3 py-1 text-xs",
-          ws.status === "connected" ? "border-profit/50 text-profit" : ws.status === "error" ? "border-loss/60 text-loss" : "border-warn/50 text-warn"
-        )}
-        title={ws.error ?? (ws.lastMessageAt ? `آخرین پیام: ${new Date(ws.lastMessageAt).toLocaleTimeString("fa-IR")}` : undefined)}
-      >
-        {ws.status === "connected" ? <Wifi className="ml-1 h-3.5 w-3.5" /> : <WifiOff className="ml-1 h-3.5 w-3.5" />}
-        {ws.status === "connected"
-          ? ws.privateEnabled ? "WebSocket خصوصی" : "WebSocket عمومی"
-          : ws.status === "connecting" ? "اتصال WebSocket…"
-            : ws.status === "reconnecting" ? "اتصال مجدد WebSocket…"
-              : ws.status === "error" ? "خطای WebSocket" : "WebSocket خاموش"}
-      </Badge>
       {stats.nextTick ? (
         <span className="hidden text-xs text-muted-foreground md:inline">
           بررسی بعدی: <span className="num">{formatTime(stats.nextTick)}</span>
@@ -133,7 +115,7 @@ function StatusStrip() {
         onClick={() => (stats.running ? engine.stop() : engine.start())}
       >
         {stats.running ? <Square className="ml-1 h-3.5 w-3.5" /> : <Play className="ml-1 h-3.5 w-3.5" />}
-        {stats.running ? "توقف ربات" : "شروع ربات"}
+        {stats.running ? "توقف رانر سرور" : "شروع رانر سرور"}
       </Button>
     </div>
   );
@@ -171,12 +153,11 @@ export function AppShell() {
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
 
-  // شروع خودکار پایش در حالت Paper (پیش‌فرض امن) — موتور خودش بررسی می‌کند
-  // که رانر ۲۴/۷ سمت سرور فعال باشد؛ در آن صورت به‌جای تیک محلی، نتیجه‌های
-  // سرور را آینه می‌کند تا دو موتور موازی روی یک حساب کار نکنند.
+  // مرورگر فقط داشبورد است: همیشه وضعیت رانر ۲۴/۷ را آینه می‌کند و هیچ حلقه
+  // معامله‌ای داخل تب اجرا نمی‌شود. روشن‌کردن رانر همچنان اقدام صریح کاربر است.
   useEffect(() => {
     if (!mounted) return;
-    if (!engine.running && engine.mode === "paper") engine.start();
+    engine.observeServer();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mounted]);
 
