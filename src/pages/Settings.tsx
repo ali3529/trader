@@ -29,6 +29,7 @@ import type { AiConfigView, AiProvider, QwenStatus } from "@/lib/ai";
 import { markUplinkDown, markUplinkUp, refreshExchangeProvider, setExchangeProvider } from "@/lib/engine/api";
 import type { ExchangeProvider } from "@/lib/engine/api";
 import { TelegramCard } from "@/components/TelegramCard";
+import { ServerRunnerCard } from "@/components/ServerRunnerCard";
 
 /** در production بدنهٔ خطای h3 بدون statusMessage می‌آید؛ پس کدهای رایج را راهنمایی می‌کنیم */
 function describeSaveError(status: number, statusMessage?: string | null): string {
@@ -474,6 +475,8 @@ export default function SettingsPage() {
       {savedMsg ? (
         <p className="rounded-xl border border-primary/30 bg-primary/10 px-4 py-2 text-xs">{savedMsg}</p>
       ) : null}
+
+      <ServerRunnerCard />
 
       <Tabs defaultValue="strategy" className="w-full">
         <TabsList className="h-auto w-full justify-start overflow-x-auto rounded-xl bg-secondary/50 p-1">

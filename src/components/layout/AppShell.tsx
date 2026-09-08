@@ -162,9 +162,25 @@ export function AppShell() {
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
 
-  // شروع خودکار پایش در حالت Paper (پیش‌فرض امن)
+  // شروع خودکار پایش در حالت Paper (پیش‌فرض امن) —
+  // اگر رانر ۲۴/۷ سمت سرور در حال اجراست، موتور محلی خودکار روشن نمی‌شود
+  // تا دو موتور موازی روی یک حساب کاغذی کار نکنند.
   useEffect(() => {
-    if (mounted && !engine.running && engine.mode === "paper") engine.start();
+    if (!mounted) return;
+    let cancelled = false;
+    void (async () => {
+      let serverRunning = false;
+      try {
+        const res = await fetch("/api/bot/status", { cache: "no-store" });
+        if (res.ok) serverRunning = ((await res.json()) as { running?: boolean }).running === true;
+      } catch {
+        serverRunning = false;
+      }
+      if (!cancelled && !serverRunning && !engine.running && engine.mode === "paper") engine.start();
+    })();
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mounted]);
 
