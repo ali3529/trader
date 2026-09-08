@@ -89,7 +89,13 @@ export function TelegramCard() {
     try {
       const res = await fetch("/api/telegram/test", { method: "POST" });
       const data = (await res.json()) as { ok?: boolean; error?: string };
-      setMessage(data.ok ? "پیام تست ارسال شد — تلگرام خود را بررسی کنید." : `ارسال ناموفق: ${data.error ?? `HTTP ${res.status}`}`);
+      setMessage(
+        data.ok
+          ? enabled
+            ? "پیام تست ارسال شد — اعلان‌های خودکار نیز فعال‌اند."
+            : "پیام تست ارسال شد؛ برای اعلان خودکار، سوییچ اصلی را روشن و تنظیمات را ذخیره کنید."
+          : `ارسال ناموفق: ${data.error ?? `HTTP ${res.status}`}`,
+      );
     } catch (err) {
       setMessage(`خطا در ارسال تست: ${(err as Error).message}`);
     } finally {

@@ -69,9 +69,12 @@ const faDuration = (ms: number): string => {
   return `${faNum(Math.floor(hours / 24))} روز و ${faNum(hours % 24)} ساعت`;
 };
 
-export async function sendTelegram(text: string): Promise<{ ok: boolean; error?: string }> {
+export async function sendTelegram(
+  text: string,
+  options: { allowWhenDisabled?: boolean } = {},
+): Promise<{ ok: boolean; error?: string }> {
   const cfg = await loadTelegramConfig();
-  if (!cfg.enabled) return { ok: false, error: "تلگرام غیرفعال است" };
+  if (!cfg.enabled && !options.allowWhenDisabled) return { ok: false, error: "تلگرام غیرفعال است" };
   if (!cfg.botToken || !cfg.chatId) return { ok: false, error: "توکن یا chat_id تنظیم نشده است" };
   try {
     const res = await fetch(`https://api.telegram.org/bot${cfg.botToken}/sendMessage`, {
