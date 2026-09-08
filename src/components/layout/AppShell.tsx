@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, Outlet, useLocation } from "react-router-dom";
 import {
+  CloudCog,
   FileBarChart2,
   FlaskConical,
   History,
@@ -61,6 +62,7 @@ function UplinkBadge() {
 function StatusStrip() {
   const engine = useEngine();
   const stats = useEngineState((e) => e.stats());
+  const serverMode = useEngineState((e) => e.serverMode);
   const ws = useEngineState((e) => ({ ...e.websocket }));
   const dataSource = useDataSource();
   const provider = useExchangeProvider();
@@ -88,10 +90,17 @@ function StatusStrip() {
         </Badge>
       ) : null}
       <UplinkBadge />
-      <Badge variant="outline" className="rounded-full border-border/70 px-3 py-1 text-xs text-muted-foreground">
-        <span className={cn("ml-1.5 inline-block h-2 w-2 rounded-full", stats.running ? "animate-pulse bg-profit" : "bg-muted-foreground/50")} />
-        {stats.running ? "در حال پایش بازار" : "متوقف"}
-      </Badge>
+      {serverMode ? (
+        <Badge className="rounded-full bg-primary/15 px-3 py-1 text-xs text-primary">
+          <CloudCog className="ml-1 h-3.5 w-3.5" />
+          رانر سرور ۲۴/۷ — نتایج از سرور
+        </Badge>
+      ) : (
+        <Badge variant="outline" className="rounded-full border-border/70 px-3 py-1 text-xs text-muted-foreground">
+          <span className={cn("ml-1.5 inline-block h-2 w-2 rounded-full", stats.running ? "animate-pulse bg-profit" : "bg-muted-foreground/50")} />
+          {stats.running ? "در حال پایش بازار" : "متوقف"}
+        </Badge>
+      )}
       <Badge
         variant="outline"
         className={cn(
@@ -162,25 +171,12 @@ export function AppShell() {
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
 
-  // شروع خودکار پایش در حالت Paper (پیش‌فرض امن) —
-  // اگر رانر ۲۴/۷ سمت سرور در حال اجراست، موتور محلی خودکار روشن نمی‌شود
-  // تا دو موتور موازی روی یک حساب کاغذی کار نکنند.
+  // شروع خودکار پایش در حالت Paper (پیش‌فرض امن) — موتور خودش بررسی می‌کند
+  // که رانر ۲۴/۷ سمت سرور فعال باشد؛ در آن صورت به‌جای تیک محلی، نتیجه‌های
+  // سرور را آینه می‌کند تا دو موتور موازی روی یک حساب کار نکنند.
   useEffect(() => {
     if (!mounted) return;
-    let cancelled = false;
-    void (async () => {
-      let serverRunning = false;
-      try {
-        const res = await fetch("/api/bot/status", { cache: "no-store" });
-        if (res.ok) serverRunning = ((await res.json()) as { running?: boolean }).running === true;
-      } catch {
-        serverRunning = false;
-      }
-      if (!cancelled && !serverRunning && !engine.running && engine.mode === "paper") engine.start();
-    })();
-    return () => {
-      cancelled = true;
-    };
+    if (!engine.running && engine.mode === "paper") engine.start();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mounted]);
 

@@ -12,7 +12,7 @@ import {
 } from "./telegram";
 import { DEFAULT_CONFIG, DEFAULT_SYMBOLS, normalizeConfig } from "../../src/lib/config";
 import type { StrategyConfig } from "../../src/lib/config";
-import type { Candle, EquityPoint, Position, Trade } from "../../src/lib/types";
+import type { Candle, EquityPoint, Position, SymbolScan, Trade } from "../../src/lib/types";
 import { evaluateEntry } from "../../src/lib/strategy/scoring";
 import { analyzeStructure, hasRecentBearishChoch } from "../../src/lib/strategy/structure";
 import { detectBearishPatterns } from "../../src/lib/strategy/patterns";
@@ -39,15 +39,6 @@ const LOCK_MS = 9 * 60_000; // جلوگیری از tick هم‌پوشان (cron 
 const DIGEST_MS = 4 * 3_600_000;
 const TICK_INTERVAL_MS = 10 * 60_000;
 
-export interface RunnerScan {
-  symbol: string;
-  score: number;
-  qualified: boolean;
-  price: number;
-  note: string;
-  updatedAt: number;
-}
-
 export interface RunnerState {
   running: boolean;
   cash: number;
@@ -59,7 +50,7 @@ export interface RunnerState {
   lastPrices: Record<string, number>;
   lastSignal1h: Record<string, number>;
   lastProcessed15m: Record<string, number>;
-  scans: Record<string, RunnerScan>;
+  scans: Record<string, SymbolScan>;
   cursor: number;
   lastTickAt: number | null;
   tickLockAt: number | null;
@@ -121,6 +112,14 @@ export async function loadRunnerConfig(): Promise<RunnerConfig> {
       ? stored.symbols.map((s) => String(s).toUpperCase()).slice(0, 12)
       : [...DEFAULT_SYMBOLS];
   return { cfg, symbols };
+}
+
+/** ذخیرهٔ پیکربندی/لیست پایش از UI تا رانر ۲۴/۷ با همان تنظیمات کاربر کار کند */
+export async function saveRunnerConfig(cfg: StrategyConfig, symbols: string[]): Promise<void> {
+  await writeState(CONFIG_FILE, {
+    cfg: normalizeConfig(cfg),
+    symbols: symbols.map((s) => String(s).toUpperCase()).slice(0, 12),
+  } satisfies RunnerConfig);
 }
 
 export async function loadRunnerState(): Promise<RunnerState> {
@@ -359,22 +358,40 @@ async function manageSymbol(
     }
   }
 
-  // سیگنال ورود فقط روی کندل ۱ ساعتهٔ تازه بسته‌شده (یک بار در هر ساعت)
+  // نمای بازار در هر تیک تازه می‌شود (قیمت/تغییر ۲۴ ساعته/حجم)
   const lastHour = c1h[c1h.length - 1].time;
   const lastPrice = c1h[c1h.length - 1].close;
   state.lastPrices[symbol] = lastPrice;
+  const last24h = c1h.slice(-24);
+  const volume24h = last24h.reduce((a, c) => a + c.volume * c.close, 0);
+  const firstHour = last24h[0];
+  const changePct24h = firstHour ? ((lastPrice - firstHour.open) / firstHour.open) * 100 : 0;
+  const prev = state.scans[symbol];
+  state.scans[symbol] = {
+    symbol,
+    lastPrice,
+    changePct24h,
+    volume24h,
+    liquidityRank: 0,
+    signal: prev?.signal ?? null,
+    status: prev?.status ?? "watching",
+    note: prev?.note ?? "در حال پایش",
+    updatedAt: Date.now(),
+  };
+
+  // سیگنال ورود فقط روی کندل ۱ ساعتهٔ تازه بسته‌شده (یک بار در هر ساعت)
   if (state.lastSignal1h[symbol] === lastHour) return;
   state.lastSignal1h[symbol] = lastHour;
 
   const signal = evaluateEntry({ symbol, candles4h: c4h, candles1h: c1h, candles15m: c15, cfg });
-  state.scans[symbol] = {
-    symbol,
-    score: signal?.score ?? 0,
-    qualified: signal?.qualified ?? false,
-    price: lastPrice,
-    note: signal ? `امتیاز ${signal.score} از ۸` : "در حال پایش",
-    updatedAt: Date.now(),
-  };
+  if (signal) {
+    state.scans[symbol] = {
+      ...state.scans[symbol]!,
+      signal,
+      status: signal.qualified ? "qualified" : "watching",
+      note: signal.qualified ? `سیگنال خرید — امتیاز ${signal.score} از ۸` : `امتیاز ${signal.score} از ۸`,
+    };
+  }
   if (!signal) return;
 
   await notify(
@@ -407,7 +424,7 @@ async function manageSymbol(
     cfg,
   });
   if (!sizing.allowed) {
-    state.scans[symbol] = { ...state.scans[symbol], note: sizing.reason };
+    state.scans[symbol] = { ...state.scans[symbol]!, status: "blocked", note: sizing.reason };
     return;
   }
 
@@ -502,7 +519,19 @@ export async function runnerTick(): Promise<TickResult> {
         }
         await manageSymbol(state, symbol, c15, c1h, c4h, cfg);
       } catch (err) {
-        notes.push(`${symbol}: ${(err as Error).message}`);
+        const message = (err as Error).message;
+        notes.push(`${symbol}: ${message}`);
+        state.scans[symbol] = {
+          symbol,
+          lastPrice: state.lastPrices[symbol] ?? 0,
+          changePct24h: 0,
+          volume24h: 0,
+          liquidityRank: 0,
+          signal: null,
+          status: "error",
+          note: `خطا: ${message}`,
+          updatedAt: Date.now(),
+        };
       }
     }
 
@@ -530,10 +559,15 @@ export async function runnerTick(): Promise<TickResult> {
             };
           }),
           opportunities: Object.values(state.scans)
-            .filter((s) => s.score > 0 && started - s.updatedAt < 24 * 3_600_000)
-            .sort((a, b) => b.score - a.score)
+            .filter((s) => (s.signal?.score ?? 0) > 0 && started - s.updatedAt < 24 * 3_600_000)
+            .sort((a, b) => (b.signal?.score ?? 0) - (a.signal?.score ?? 0))
             .slice(0, 5)
-            .map((s) => ({ symbol: s.symbol, score: s.score, qualified: s.qualified, price: s.price })),
+            .map((s) => ({
+              symbol: s.symbol,
+              score: s.signal?.score ?? 0,
+              qualified: s.signal?.qualified ?? false,
+              price: s.lastPrice,
+            })),
           equity,
           riskState: RISK_FA[riskState(drawdownPct(equity, state.peakEquity), cfg)] ?? "عادی",
           time: started,
@@ -594,8 +628,24 @@ export async function runnerStatus() {
     lastError: state.lastError,
     lastNotes: state.lastNotes ?? [],
     scans: Object.values(state.scans)
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 8),
+      .sort((a, b) => (b.signal?.score ?? 0) - (a.signal?.score ?? 0))
+      .slice(0, 8)
+      .map((s) => ({
+        symbol: s.symbol,
+        score: s.signal?.score ?? 0,
+        qualified: s.signal?.qualified ?? false,
+        price: s.lastPrice,
+        note: s.note,
+        updatedAt: s.updatedAt,
+      })),
+    /** داده کامل برای آینه‌سازی در UI (داشبورد/پوزیشن‌ها/معاملات/فرصت‌ها) */
+    full: {
+      positions: state.positions,
+      trades: state.trades.slice(-200),
+      equityCurve: state.equity.slice(-1500),
+      scans: Object.values(state.scans),
+      lastPrices: state.lastPrices,
+    },
   };
 }
 

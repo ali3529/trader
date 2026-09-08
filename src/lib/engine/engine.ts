@@ -55,6 +55,27 @@ interface RealOrderResult {
   reconciliationRequired: boolean;
 }
 
+/** وضعیت رانر ۲۴/۷ سرور (خروجی /api/bot/status) برای آینه‌سازی در UI */
+interface ServerRunnerStatus {
+  running: boolean;
+  cash: number;
+  equity: number;
+  peakEquity: number;
+  initialCapital: number;
+  tickCount: number;
+  lastTickAt: number | null;
+  nextTickAt: number | null;
+  lastError: string | null;
+  lastNotes: string[];
+  full: {
+    positions: Position[];
+    trades: Trade[];
+    equityCurve: EquityPoint[];
+    scans: SymbolScan[];
+    lastPrices: Record<string, number>;
+  };
+}
+
 interface NobitexAccount {
   balances: Record<string, number>;
   totalBalances?: Record<string, number>;
@@ -103,6 +124,11 @@ export class BotEngine {
   websocket: NobitexSocketState = { status: "idle", privateEnabled: false, lastMessageAt: null, error: null };
   busy = false;
   notice: string | null = null;
+  /** وقتی رانر ۲۴/۷ سرور فعال است، موتور فقط نتیجه‌های سرور را آینه می‌کند */
+  serverMode = false;
+  serverInfo: { tickCount: number; lastTickAt: number | null; lastError: string | null; lastNotes: string[] } | null = null;
+
+  private serverTimer: ReturnType<typeof setInterval> | null = null;
 
   private lastSignal1h: Record<string, number> = {};
   private lastProcessed15m: Record<string, number> = {};
@@ -149,7 +175,8 @@ export class BotEngine {
 
   private notify(): void {
     this.listeners.forEach((fn) => fn());
-    this.persist();
+    // در حالت آینهٔ سرور، وضعیت سرور هرگز در دفتر محلی persist نمی‌شود
+    if (!this.serverMode) this.persist();
   }
 
   private notifyUi(): void {
@@ -187,6 +214,11 @@ export class BotEngine {
   }
 
   resetPaper(): void {
+    if (this.serverMode) {
+      this.notice = "حساب کاغذی توسط رانر سرور مدیریت می‌شود — برای بازنشانی از کارت «رانر ۲۴/۷ سرور» در تنظیمات استفاده کنید.";
+      this.notifyUi();
+      return;
+    }
     if (this.mode === "real") {
       try {
         localStorage.setItem(PAPER_STORE_KEY, JSON.stringify(this.emptyPortfolio(this.cfg.paperInitialCapital)));
@@ -246,10 +278,20 @@ export class BotEngine {
 
   // ---------- پیکربندی ----------
 
+  /** تنظیمات و لیست پایش فعلی برای رانر ۲۴/۷ سرور ارسال می‌شود تا با همان پیکربندی کاربر کار کند */
+  private pushServerConfig(): void {
+    fetch("/api/bot/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cfg: this.cfg, symbols: this.symbols }),
+    }).catch(() => undefined);
+  }
+
   setConfig(cfg: StrategyConfig): void {
     this.cfg = normalizeConfig(cfg);
     saveConfig(this.cfg);
     configureApi(this.cfg);
+    this.pushServerConfig();
     this.notify();
   }
 
@@ -257,12 +299,15 @@ export class BotEngine {
     this.symbols = symbols;
     saveSymbols(symbols);
     this.socket.setSymbols(symbols);
+    this.pushServerConfig();
     this.notify();
   }
 
   async setMode(mode: "paper" | "real"): Promise<void> {
     if (mode === this.mode) return;
     if (mode === "real") {
+      // معامله واقعی همیشه از موتور محلی انجام می‌شود — از آینهٔ سرور خارج شو
+      if (this.serverMode) this.exitServerMirror();
       // دروازهٔ معامله واقعی از صرافی فعال خوانده می‌شود (نوبیتکس یا رمزینکس)
       const gate = getExchangeProvider() === "ramzinex" ? "/api/ramzinex/keys" : "/api/keys";
       const res = await fetch(gate, { cache: "no-store" }).then((r) => r.json()) as { configured?: boolean; realEnabled?: boolean };
@@ -454,6 +499,34 @@ export class BotEngine {
   start(): void {
     if (this.running) return;
     this.running = true;
+    void this.bootstrap();
+  }
+
+  /**
+   * اگر رانر ۲۴/۷ سرور در حال اجراست (و حالت paper است)، موتور محلی تیک نمی‌زند
+   * و فقط وضعیت سرور را هر ۱۵ ثانیه آینه می‌کند؛ وگرنه حلقهٔ محلی شروع می‌شود.
+   */
+  private async bootstrap(): Promise<void> {
+    if (this.mode === "paper") {
+      try {
+        const res = await fetch("/api/bot/status", { cache: "no-store" });
+        if (res.ok) {
+          const status = (await res.json()) as ServerRunnerStatus;
+          if (status.running) {
+            this.applyServerStatus(status);
+            this.enterServerMirror();
+            return;
+          }
+        }
+      } catch {
+        /* سرور در دسترس نیست — حالت محلی */
+      }
+    }
+    this.startLocal();
+  }
+
+  private startLocal(): void {
+    if (!this.running || this.serverMode) return;
     this.socket.start(this.symbols);
     this.scheduleNext();
     this.timer = setInterval(() => {
@@ -463,11 +536,83 @@ export class BotEngine {
     void this.tick();
   }
 
+  private enterServerMirror(): void {
+    this.serverMode = true;
+    this.pushServerConfig();
+    this.socket.stop();
+    if (this.timer) clearInterval(this.timer);
+    this.timer = null;
+    this.serverTimer = setInterval(() => void this.pollServer(), 15_000);
+    this.notice = "رانر ۲۴/۷ سمت سرور فعال است — همهٔ نتیجه‌ها (سیگنال/خرید/فروش) از سرور آینه می‌شوند.";
+    this.notifyUi();
+  }
+
+  private exitServerMirror(): void {
+    if (this.serverTimer) clearInterval(this.serverTimer);
+    this.serverTimer = null;
+    this.serverMode = false;
+    this.serverInfo = null;
+    // دفتر محلی از حافظهٔ مرورگر بازیابی می‌شود تا دادهٔ سرور در آن persist نشود
+    this.loadPortfolio(this.mode);
+    this.startLocal();
+  }
+
+  private async pollServer(): Promise<void> {
+    try {
+      const res = await fetch("/api/bot/status", { cache: "no-store" });
+      if (!res.ok) return;
+      const status = (await res.json()) as ServerRunnerStatus;
+      if (!status.running) {
+        this.exitServerMirror();
+        return;
+      }
+      this.applyServerStatus(status);
+      this.notifyUi();
+    } catch {
+      /* خطای موقت شبکه — poll بعدی تلاش می‌کند */
+    }
+  }
+
+  /** نمادهای رانر سرور با قالب صرافی فعال‌اند (BTCIRR در رمزینکس)؛ قرارداد UI لیست پایش است (IRT) */
+  private uiSymbol(symbol: string): string {
+    return symbol.replace(/IRR$/, "IRT");
+  }
+
+  /** نگاشت خروجی /api/bot/status به فیلدهای موتور تا همهٔ صفحات UI بدون تغییر کار کنند */
+  private applyServerStatus(s: ServerRunnerStatus): void {
+    this.cash = s.cash;
+    this.peakEquity = s.peakEquity;
+    this.positions = s.full.positions.map((p) => ({ ...p, symbol: this.uiSymbol(p.symbol) }));
+    this.trades = s.full.trades.map((t) => ({ ...t, symbol: this.uiSymbol(t.symbol) }));
+    this.equity = s.full.equityCurve;
+    const scans: Record<string, SymbolScan> = {};
+    for (const scan of s.full.scans) {
+      const symbol = this.uiSymbol(scan.symbol);
+      scans[symbol] = { ...scan, symbol };
+    }
+    this.scans = scans;
+    this.lastTick = s.lastTickAt;
+    this.nextTick = s.nextTickAt;
+    this.serverInfo = {
+      tickCount: s.tickCount,
+      lastTickAt: s.lastTickAt,
+      lastError: s.lastError,
+      lastNotes: s.lastNotes,
+    };
+  }
+
   stop(): void {
     this.running = false;
     this.socket.stop();
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+    if (this.serverTimer) clearInterval(this.serverTimer);
+    this.serverTimer = null;
+    if (this.serverMode) {
+      this.serverMode = false;
+      this.serverInfo = null;
+      this.loadPortfolio(this.mode);
+    }
     this.nextTick = null;
     this.notify();
   }
@@ -482,7 +627,7 @@ export class BotEngine {
   // ---------- حلقه اصلی ----------
 
   async tick(): Promise<void> {
-    if (this.busy) return;
+    if (this.busy || this.serverMode) return;
     this.busy = true;
     try {
       const now = Date.now();
@@ -1019,6 +1164,11 @@ export class BotEngine {
   }
 
   closePositionManually(id: string): void {
+    if (this.serverMode) {
+      this.notice = "پوزیشن‌ها توسط رانر ۲۴/۷ سرور مدیریت می‌شوند؛ برای کنترل دستی، رانر را از تنظیمات خاموش کنید.";
+      this.notifyUi();
+      return;
+    }
     const p = this.positions.find((x) => x.id === id);
     if (!p) return;
     const scan = this.scans[p.symbol];
