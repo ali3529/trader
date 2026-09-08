@@ -1,9 +1,8 @@
 import { defineHandler } from "nitro";
 import { createError, readBody } from "nitro/h3";
-import { exchangeRealEnabled, loadRunnerState, resetRunner, runnerStatus, setRunnerRunning } from "../../../utils/botRunner";
+import { exchangeRealEnabled, loadRunnerState, resetRunner, runnerStatus, runnerTick, setRunnerRunning } from "../../../utils/botRunner";
 import { getBotMode, setBotMode, type BotMode } from "../../../utils/botMode";
 import { assertSensitiveRequest } from "../../../utils/requestSecurity";
-import { triggerBotTick } from "../../../utils/botScheduler";
 
 interface Body {
   running?: boolean;
@@ -41,7 +40,9 @@ export default defineHandler(async (event) => {
     const state = await loadRunnerState(requestedMode);
     if (body.running === state.running) return runnerStatus();
     await setRunnerRunning(body.running, requestedMode);
-    if (body.running) triggerBotTick();
+    // اجرای اول را await می‌کنیم تا در محیط serverless نیز پیش از پایان request
+    // واقعاً انجام شود؛ timerهای پس‌زمینه در Vercel تضمین‌شده نیستند.
+    if (body.running) await runnerTick();
   }
 
   return runnerStatus();

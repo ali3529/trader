@@ -80,6 +80,7 @@ export function ServerRunnerCard() {
   const selectedMode = useEngineState((e) => e.mode);
   const [status, setStatus] = useState<RunnerStatus | null>(null);
   const [busy, setBusy] = useState(false);
+  const [ticking, setTicking] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [copied, setCopied] = useState(false);
   const [startOpen, setStartOpen] = useState(false);
@@ -122,6 +123,32 @@ export function ServerRunnerCard() {
       setBusy(false);
       setStartOpen(false);
       setResetOpen(false);
+    }
+  }
+
+  async function runNow() {
+    setTicking(true);
+    setMsg(null);
+    try {
+      const res = await fetch("/api/cron/tick", { cache: "no-store" });
+      const data = (await res.json().catch(() => null)) as
+        | { ok?: boolean; skipped?: string; positions?: number; ms?: number; statusMessage?: string; message?: string }
+        | null;
+      if (!res.ok) {
+        setMsg({ ok: false, text: data?.statusMessage ?? data?.message ?? `HTTP ${res.status}` });
+        return;
+      }
+      await refresh();
+      setMsg({
+        ok: data?.ok === true,
+        text: data?.ok
+          ? `تحلیل فوری انجام شد؛ ${faNum(data.positions ?? 0)} پوزیشن باز است.`
+          : `تحلیل اجرا نشد: ${data?.skipped ?? "علت نامشخص"}`,
+      });
+    } catch (err) {
+      setMsg({ ok: false, text: (err as Error).message });
+    } finally {
+      setTicking(false);
     }
   }
 
@@ -240,9 +267,14 @@ export function ServerRunnerCard() {
 
         <div className="flex flex-wrap items-center gap-2">
           {status?.running ? (
-            <Button size="sm" variant="outline" className="rounded-full border-loss/50 text-loss" disabled={busy} onClick={() => void control({ running: false }, "رانر سرور خاموش شد.")}>
-              <Square className="ml-1 h-3.5 w-3.5" /> خاموش‌کردن رانر
-            </Button>
+            <>
+              <Button size="sm" variant="outline" className="rounded-full border-loss/50 text-loss" disabled={busy || ticking} onClick={() => void control({ running: false }, "رانر سرور خاموش شد.")}>
+                <Square className="ml-1 h-3.5 w-3.5" /> خاموش‌کردن رانر
+              </Button>
+              <Button size="sm" variant="outline" className="rounded-full" disabled={busy || ticking} onClick={() => void runNow()}>
+                <Play className="ml-1 h-3.5 w-3.5" /> {ticking ? "در حال تحلیل…" : "اجرای تحلیل الآن"}
+              </Button>
+            </>
           ) : (
             isReal ? (
               <AlertDialog open={startOpen} onOpenChange={setStartOpen}>
