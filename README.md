@@ -116,6 +116,8 @@ NITRO_OLLAMA_MODEL=qwen3:4b pnpm dev
    - `TRADEBAN_SECRET` — **الزامی روی Vercel**: کلید پایدار رمزنگاری state (بدون آن، کلیدهای ذخیره‌شده پس از هر cold start رمزگشایی نمی‌شوند).
    - `TRADEBAN_BASIC_AUTH='username:strong-password'` — **الزامی**: بدون آن همه routeهای حساس در production با 403 بسته می‌شوند. مرورگر (Chrome) با prompt بومی Basic Auth یک‌بار در هر نشست credentials را می‌گیرد.
 4. پس از دیپلوی، کلیدهای نوبیتکس/رمزینکس را از صفحه «تنظیمات» دوباره وارد کنید تا در KV ذخیره شوند.
+5. روی Vercel Hobby، Cron داخلی فقط روزانه اجرا می‌شود. برای tick ده‌دقیقه‌ای، یک سرویس بیرونی مانند
+   cron-job.org را روی `GET /api/cron/tick` با هدر `Authorization: Bearer <CRON_SECRET>` تنظیم کنید.
 
 نکات:
 

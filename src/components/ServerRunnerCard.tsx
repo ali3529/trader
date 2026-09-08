@@ -311,12 +311,12 @@ export function ServerRunnerCard() {
           <ol className="list-decimal space-y-1 pr-4">
             <li>
               در پنل Vercel → Environment Variables متغیر <bdi dir="ltr" className="font-mono">CRON_SECRET</bdi> را با
-              یک رمز دلخواه قوی بسازید و Redeploy بزنید. کرون خود Vercel با همین رمز هر ۱۰ دقیقه
+              یک رمز دلخواه قوی بسازید و Redeploy بزنید. Cron روزانهٔ Vercel به‌عنوان fallback
               <bdi dir="ltr" className="font-mono"> /api/cron/tick </bdi> را صدا می‌زند.
             </li>
             <li>
-              روی پلن رایگان (Hobby) کرون Vercel فقط <b>روزی یک بار</b> اجرا می‌شود. برای چرخهٔ ۱۰ دقیقه‌ای، یک
-              پینگر رایگان مثل <bdi dir="ltr">cron-job.org</bdi> بسازید: every 10 minutes، متد GET، همین آدرس با هدر
+              برای چرخهٔ واقعی ۱۰ دقیقه‌ای روی Hobby، یک پینگر مثل <bdi dir="ltr">cron-job.org</bdi> بسازید:
+              every 10 minutes، متد GET، همین آدرس با هدر
               <bdi dir="ltr" className="font-mono"> Authorization: Bearer &lt;CRON_SECRET&gt;</bdi>:
             </li>
           </ol>
