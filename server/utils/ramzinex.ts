@@ -87,6 +87,30 @@ interface RzEnvelope<T> {
   message?: string;
 }
 
+/**
+ * بیشتر endpointهای رمزینکس پاسخ را داخل `data` می‌گذارند، اما endpoint چارت
+ * مستقیماً payload استاندارد UDF (`{ s, t, o, ... }`) را برمی‌گرداند.
+ */
+export function unwrapPublicResponse<T>(payload: unknown, statusCode = 502): T {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return payload as T;
+
+  const json = payload as Record<string, unknown>;
+  const hasStatus = typeof json.status === "number";
+  const hasData = Object.prototype.hasOwnProperty.call(json, "data");
+  if (!hasStatus && !hasData) return payload as T;
+
+  if (hasStatus && json.status !== 0) {
+    throw new RamzinexError(
+      String(json.description ?? json.message ?? `ramzinex status ${json.status}`),
+      statusCode,
+    );
+  }
+  if (!hasData || json.data === undefined) {
+    throw new RamzinexError("پاسخ رمزینکس فیلد data ندارد", statusCode);
+  }
+  return json.data as T;
+}
+
 export async function publicGet<T>(path: string, params: Record<string, string> = {}, base = PUBLIC_BASE): Promise<T> {
   const qs = new URLSearchParams(params).toString();
   const url = `${base}${path}${qs ? `?${qs}` : ""}`;
@@ -104,11 +128,7 @@ export async function publicGet<T>(path: string, params: Record<string, string> 
         continue;
       }
       if (!res.ok) throw new RamzinexError(`ramzinex ${res.status}: ${text.slice(0, 160)}`, res.status, res.status >= 500);
-      const json = JSON.parse(text) as RzEnvelope<T>;
-      if (json.status !== 0 && json.status !== undefined) {
-        throw new RamzinexError(json.description ?? json.message ?? `ramzinex status ${json.status}`, res.status || 502);
-      }
-      return json.data as T;
+      return unwrapPublicResponse<T>(JSON.parse(text), res.status || 502);
     } catch (err) {
       console.log(`[ramzinex] GET ${url} -> FAILED | ${errDetail(err)}`);
       lastErr = err;

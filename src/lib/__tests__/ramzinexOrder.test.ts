@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizeOrder } from "../../../server/utils/ramzinex";
+import { normalizeOrder, unwrapPublicResponse } from "../../../server/utils/ramzinex";
 import { hasUnresolvedOrder, type BotOrderRecord } from "../../../server/utils/orderLedger";
 
 describe("نرمال‌سازی سفارش رمزینکس", () => {
@@ -22,6 +22,21 @@ describe("نرمال‌سازی سفارش رمزینکس", () => {
 
   it("فیلد matched_amount را نیز به‌عنوان fill نهایی می‌خواند", () => {
     expect(normalizeOrder({ id: 43, type: "sell", matched_amount: "1.25", status_id: 3 }).filled).toBe(1.25);
+  });
+});
+
+describe("پاسخ endpointهای عمومی رمزینکس", () => {
+  it("پاسخ envelope را از data خارج می‌کند", () => {
+    expect(unwrapPublicResponse<{ pairs: number[] }>({ status: 0, data: { pairs: [2, 3] } })).toEqual({ pairs: [2, 3] });
+  });
+
+  it("پاسخ مستقیم UDF چارت را بدون تغییر نگه می‌دارد", () => {
+    const candles = { s: "ok", t: [1], o: [10], h: [12], l: [9], c: [11], v: [2] };
+    expect(unwrapPublicResponse(candles)).toBe(candles);
+  });
+
+  it("خطای envelope را به‌جای برگرداندن data ناموجود گزارش می‌کند", () => {
+    expect(() => unwrapPublicResponse({ status: 1, description: "bad request" })).toThrow("bad request");
   });
 });
 
