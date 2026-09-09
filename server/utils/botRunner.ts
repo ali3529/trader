@@ -12,7 +12,7 @@ import {
   loadTelegramConfig,
   sendTelegram,
 } from "./telegram";
-import { DEFAULT_CONFIG, DEFAULT_SYMBOLS, normalizeConfig } from "../../src/lib/config";
+import { DEFAULT_CONFIG, DEFAULT_SYMBOLS, MAX_WATCH_SYMBOLS, normalizeConfig } from "../../src/lib/config";
 import type { StrategyConfig } from "../../src/lib/config";
 import type { Candle, EquityPoint, Position, SymbolScan, Trade } from "../../src/lib/types";
 import { evaluateEntry } from "../../src/lib/strategy/scoring";
@@ -115,7 +115,7 @@ export async function loadRunnerConfig(): Promise<RunnerConfig> {
   const cfg = normalizeConfig({ ...DEFAULT_CONFIG, ...(stored?.cfg ?? {}) } as StrategyConfig);
   const symbols =
     Array.isArray(stored?.symbols) && stored.symbols.length
-      ? stored.symbols.map((s) => String(s).toUpperCase()).slice(0, 12)
+      ? stored.symbols.map((s) => String(s).toUpperCase()).slice(0, MAX_WATCH_SYMBOLS)
       : [...DEFAULT_SYMBOLS];
   return { cfg, symbols };
 }
@@ -124,7 +124,7 @@ export async function loadRunnerConfig(): Promise<RunnerConfig> {
 export async function saveRunnerConfig(cfg: StrategyConfig, symbols: string[]): Promise<void> {
   await writeState(CONFIG_FILE, {
     cfg: normalizeConfig(cfg),
-    symbols: symbols.map((s) => String(s).toUpperCase()).slice(0, 12),
+    symbols: symbols.map((s) => String(s).toUpperCase()).slice(0, MAX_WATCH_SYMBOLS),
   } satisfies RunnerConfig);
 }
 
@@ -786,6 +786,10 @@ export async function runnerTick(): Promise<TickResult> {
 
     const watch = Array.from(new Set(symbols.map((s) => toProviderSymbol(s, provider))));
     const openSymbols = state.positions.map((p) => p.symbol);
+    const activeSymbols = new Set([...watch, ...openSymbols]);
+    for (const scannedSymbol of Object.keys(state.scans)) {
+      if (!activeSymbols.has(scannedSymbol)) delete state.scans[scannedSymbol];
+    }
     const pool = watch.filter((s) => !openSymbols.includes(s));
     const slice = pool.slice(state.cursor, state.cursor + BATCH_SIZE);
     state.cursor = pool.length ? (state.cursor + BATCH_SIZE) % pool.length : 0;

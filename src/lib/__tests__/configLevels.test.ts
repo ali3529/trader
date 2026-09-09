@@ -1,9 +1,25 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_CONFIG, normalizeConfig } from "../config";
+import { DEFAULT_CONFIG, DEFAULT_SYMBOLS, MAX_WATCH_SYMBOLS, normalizeConfig } from "../config";
 import { buildGrid, nearestExitLevel } from "../strategy/levels";
 import type { Candle, Level } from "../types";
 
 describe("تنظیمات ایمنی", () => {
+  it("فهرست پیش‌فرض فقط شامل نمادهای انتخاب‌شده و در محدوده ظرفیت رانر است", () => {
+    expect(DEFAULT_SYMBOLS).toHaveLength(15);
+    expect(DEFAULT_SYMBOLS).not.toContain("TONIRT");
+    expect(DEFAULT_SYMBOLS).toEqual(expect.arrayContaining([
+      "ZECIRT",
+      "ENAIRT",
+      "HYPEIRT",
+      "TAOIRT",
+      "AEROIRT",
+      "USELESSIRT",
+      "ONDOIRT",
+      "SUIIRT",
+    ]));
+    expect(DEFAULT_SYMBOLS.length).toBeLessThanOrEqual(MAX_WATCH_SYMBOLS);
+  });
+
   it("محدودیت‌های حیاتی با localStorage قابل عبور نیستند", () => {
     const cfg = normalizeConfig({
       ...DEFAULT_CONFIG,

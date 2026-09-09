@@ -171,11 +171,20 @@ export const DEFAULT_CONFIG: StrategyConfig = {
   minOrderToman: 300_000,
 };
 
+export const MAX_WATCH_SYMBOLS = 20;
+
 export const DEFAULT_SYMBOLS = [
+  "ZECIRT",
+  "ENAIRT",
+  "HYPEIRT",
+  "TAOIRT",
+  "AEROIRT",
+  "USELESSIRT",
+  "ONDOIRT",
+  "SUIIRT",
   "BTCIRT",
   "ETHIRT",
   "USDTIRT",
-  "TONIRT",
   "TRXIRT",
   "XRPIRT",
   "SOLIRT",
