@@ -74,7 +74,7 @@ function relativeFa(ms: number | null): string {
 
 /**
  * کنترل و پایش رانر ۲۴/۷ سمت سرور — حتی وقتی مرورگر/سیستم خاموش است،
- * Vercel Cron (یا پینگر خارجی) هر ۱۰ دقیقه یک tick اجرا می‌کند.
+ * داشبورد باز یا پینگر خارجی می‌تواند هر ۱۰ دقیقه tick اجرا کند؛ Cron داخلی Vercel روزانه است.
  */
 export function ServerRunnerCard() {
   const selectedMode = useEngineState((e) => e.mode);
@@ -174,8 +174,9 @@ export function ServerRunnerCard() {
           ) : null}
         </CardTitle>
         <CardDescription className="text-[11px] leading-6">
-          این صفحه فقط داشبورد است. رانر روی سرور هر ۱۰ دقیقه بازار را بررسی می‌کند و پس از بستن تب هم ادامه
-          می‌دهد. در حالت Real سفارش‌ها فقط با کلید فعال و تأیید ENABLE-REAL-TRADING روی صرافی ثبت می‌شوند.
+          با بازبودن داشبورد، رانر هر ۱۰ دقیقه بازار را بررسی می‌کند. پس از بستن تب، Cron داخلی Vercel روزانه
+          ادامه می‌دهد؛ برای چرخه ۱۰ دقیقه‌ایِ دائمی پینگر خارجی لازم است. در حالت Real سفارش‌ها فقط با کلید فعال
+          و تأیید ENABLE-REAL-TRADING روی صرافی ثبت می‌شوند.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
