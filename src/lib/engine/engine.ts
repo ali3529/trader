@@ -558,7 +558,7 @@ export class BotEngine {
       this.applyServerStatus(data);
       this.enterServerMirror();
       this.notice = running
-        ? `رانر ${this.mode === "real" ? "Real" : "Paper"} روی سرور روشن شد و با بستن مرورگر ادامه می‌دهد.`
+        ? `رانر ${this.mode === "real" ? "Real" : "Paper"} روشن شد؛ داشبورد باز هر ۱۰ دقیقه tick می‌فرستد و Cron سرور نیز روزانه ادامه می‌دهد.`
         : "رانر سرور خاموش شد.";
     } catch (error) {
       this.notice = `کنترل رانر سرور ناموفق بود: ${(error as Error).message}`;
@@ -601,6 +601,18 @@ export class BotEngine {
       const status = (await res.json()) as ServerRunnerStatus;
       this.applyServerStatus(status);
       this.notifyUi();
+
+      // Cron این استقرار Vercel روزانه است. تا وقتی داشبورد باز است، نشست
+      // احرازشدهٔ مرورگر cadence ده‌دقیقه‌ای مورد انتظار را تأمین می‌کند.
+      // قفل tick و محدودیت یک‌دقیقه‌ای سرور از اجرای هم‌زمان جلوگیری می‌کنند.
+      if (
+        status.running &&
+        status.nextTickAt !== null &&
+        Date.now() >= status.nextTickAt &&
+        !this.busy
+      ) {
+        void this.tick();
+      }
     } catch {
       /* خطای موقت شبکه — poll بعدی تلاش می‌کند */
     }

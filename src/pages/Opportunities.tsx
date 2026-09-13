@@ -128,6 +128,8 @@ export default function Opportunities() {
           const signal = scan.signal;
           const meta = STATUS_META[scan.status];
           const expanded = open === scan.symbol;
+          const critical = signal?.criteria.filter((criterion) => criterion.critical) ?? [];
+          const failedCritical = critical.filter((criterion) => !criterion.passed);
           return (
             <Card key={scan.symbol} className={cn("border-border/60", signal?.qualified && "border-profit/40")}>
               <CardContent className="p-4">
@@ -187,6 +189,23 @@ export default function Opportunities() {
                         بررسی مشورتی Qwen
                       </Button>
                     </div>
+
+                    {!signal.qualified ? (
+                      <div className="mt-3 rounded-lg border border-loss/20 bg-loss/5 px-3 py-2 text-[11px] leading-5">
+                        <p className="font-bold text-loss">
+                          شروط حیاتی: {critical.length - failedCritical.length} از {critical.length} تأیید
+                        </p>
+                        {failedCritical.length ? (
+                          <p className="text-muted-foreground">
+                            مانع ورود: {failedCritical.map((criterion) => criterion.label).join(" · ")}
+                          </p>
+                        ) : (
+                          <p className="text-muted-foreground">
+                            همه شروط حیاتی تأیید شده‌اند؛ امتیاز کل هنوز به حداقل {engine.cfg.minConfirmations} نرسیده است.
+                          </p>
+                        )}
+                      </div>
+                    ) : null}
 
                     {aiResults[scan.symbol] ? (
                       <div className="mt-3 rounded-xl border border-sky-500/20 bg-sky-500/5 p-3 text-[11px]">

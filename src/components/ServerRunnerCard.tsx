@@ -210,6 +210,13 @@ export function ServerRunnerCard() {
               </p>
             ) : null}
 
+            {status.running ? (
+              <p className="flex items-start gap-2 rounded-lg bg-secondary/40 px-3 py-2 text-[11px] leading-5 text-muted-foreground">
+                <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warn" />
+                Cron این استقرار روزانه است. برای اسکن هر ۱۰ دقیقه، داشبورد را در یک تب باز نگه دارید؛ هر tick دو نماد را بررسی می‌کند.
+              </p>
+            ) : null}
+
             {status.positions.length ? (
               <div className="space-y-1.5">
                 <p className="text-[10px] font-bold text-muted-foreground">پوزیشن‌های باز سرور</p>
