@@ -888,7 +888,7 @@ export class BotEngine {
     this.lastProcessed15m[symbol] = candles15m[candles15m.length - 1].time;
 
     const structure4h = analyzeStructure(candles4h, this.cfg.swingLookback);
-    const chochDown = hasRecentBearishChoch(structure4h, this.cfg.exitChochBars);
+    const chochDown = hasRecentBearishChoch(structure4h, candles4h.length - 1, this.cfg.exitChochBars);
 
     for (const candle of fresh) {
       const current = this.positions.find((p) => p.id === position.id);

@@ -29,7 +29,7 @@ export default function Positions() {
             <Wallet className="h-10 w-10 text-muted-foreground/50" />
             <p className="text-sm text-muted-foreground">پوزیشن بازی وجود ندارد.</p>
             <p className="max-w-md text-xs text-muted-foreground">
-              ربات به‌طور خودکار پس از تأیید ساختار ۴ ساعته، الگوی ورود ۱ ساعته، فیلتر مومنتوم ۱۵ دقیقه و حداقل ۶ تأیید از ۸ معیار وارد معامله می‌شود.
+              ربات پس از تأیید ساختار تازه ۴ ساعته، ناحیه ورود، شکست ۱۵ دقیقه، فضای کافی تا هدف و حداقل {engine.cfg.minConfirmations.toLocaleString("fa-IR")} تأیید از ۸ معیار وارد معامله می‌شود.
             </p>
           </CardContent>
         </Card>

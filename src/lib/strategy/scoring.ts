@@ -6,7 +6,9 @@ import { detectBullishPatterns, PATTERN_LABELS } from "./patterns";
 import {
   allLevels,
   buildGrid,
-  nearestExitLevel,
+  exitLevelsAbove,
+  levelLower,
+  levelUpper,
   nearestSupport,
 } from "./levels";
 
@@ -25,9 +27,8 @@ export function qualifiesEntry(criteria: CriterionResult[], minConfirmations: nu
 }
 
 /**
- * امتیازدهی ورود با ۸ معیار؛ ورود فقط با عبور از همه شروط حیاتی
- * (ساختار، محل معتبر، تأیید ورود، مومنتوم ۱۵دقیقه، RR≥1.5، Stop معتبر)
- * و حداقل ۶ تأیید از ۸.
+ * امتیازدهی ورود با ۸ معیار: پنج شرط حیاتی (ساختار تازه، محل معتبر،
+ * تریگر ۱۵ دقیقه، فضای هدف و Stop) و حداقل دو تأیید از سه فیلتر نرم.
  * Grid هرگز معیار ورود نیست — فقط در سیگنال برای تقسیم سرمایه حمل می‌شود.
  */
 export function evaluateEntry({ symbol, candles4h, candles1h, candles15m, cfg }: EvaluateInput): EntrySignal | null {
@@ -41,25 +42,45 @@ export function evaluateEntry({ symbol, candles4h, candles1h, candles15m, cfg }:
 
   // ۱) ساختار ۴ ساعته (حیاتی)
   const structure = analyzeStructure(candles4h, cfg.swingLookback);
-  const structureOk = isBullishStructure(structure);
+  const structureOk = isBullishStructure(structure, candles4h.length - 1, cfg.entryStructureBars);
 
   // سطوح کلیدی یک‌ساعته
   const levels = allLevels(candles1h, atr1h, cfg);
   const support = nearestSupport(levels, entry);
-  const resistance = nearestExitLevel(levels, entry);
+  const exitLevels = exitLevelsAbove(levels, entry);
+  const firstResistance = exitLevels[0] ?? null;
 
   // ۲) محل معتبر: نزدیکی قیمت به حمایت/Order Block/FVG (حیاتی)
-  const distanceToLevel = support ? entry - support.price : Infinity;
+  const distanceToLevel = support ? Math.max(0, entry - levelUpper(support)) : Infinity;
   const locationOk = support !== null && distanceToLevel <= cfg.levelProximityAtr * atr1h;
 
-  // ۳) تأیید ورود: الگوی کندلی روی آخرین کندل بسته‌شده ۱ ساعته (حیاتی)
-  const patterns = detectBullishPatterns(candles1h, cfg);
-  const pattern = patterns[0] ?? null;
+  // ۳) الگوی تأیید می‌تواند روی یکی از دو کندل اخیر ۱ ساعته شکل گرفته باشد.
+  let pattern = null as ReturnType<typeof detectBullishPatterns>[number] | null;
+  let patternAge = 0;
+  for (let age = 0; age < cfg.entryPatternLookback; age++) {
+    const end = candles1h.length - age;
+    const hit = detectBullishPatterns(candles1h.slice(0, end), cfg)[0];
+    if (hit) {
+      pattern = hit;
+      patternAge = age;
+      break;
+    }
+  }
   const patternOk = pattern !== null;
 
-  // ۴) فیلتر نهایی مومنتوم ۱۵ دقیقه — شرط حیاتیِ وتوکننده، نه سیگنال‌دهنده
+  // ۴) تریگر واقعی ۱۵ دقیقه: شکست سقف سه کندل پیشین، در پنجره زمانی محدود.
   const rsi15 = lastRsi(candles15m, cfg.rsiPeriod);
-  const momentumOk = rsi15 !== null && rsi15 >= cfg.momentumRsiMin && rsi15 <= cfg.momentumRsiMax;
+  let triggerAge: number | null = null;
+  for (let age = 0; age < cfg.entryTriggerLookback; age++) {
+    const index = candles15m.length - 1 - age;
+    if (index < 3) break;
+    const priorHigh = Math.max(...candles15m.slice(index - 3, index).map((candle) => candle.high));
+    if (candles15m[index].close > priorHigh) {
+      triggerAge = age;
+      break;
+    }
+  }
+  const momentumOk = triggerAge !== null && rsi15 !== null && rsi15 >= cfg.momentumRsiMin && rsi15 <= cfg.momentumRsiMax;
 
   // ۵) RSI(14) یک‌ساعته در بازه سالم
   const rsi1h = lastRsi(candles1h, cfg.rsiPeriod);
@@ -69,20 +90,31 @@ export function evaluateEntry({ symbol, candles4h, candles1h, candles15m, cfg }:
   const volRatio = volumeRatio(candles1h, cfg.volumeAvgPeriod);
   const volumeOk = volRatio !== null && volRatio >= cfg.minVolumeRatio;
 
-  // Stop ساختاری: زیر آخرین کف چرخشی یا سطح حمایت، با فاصله ایمنی ATR
-  const candidates: number[] = [];
-  if (structure.lastSwingLow && structure.lastSwingLow < entry) candidates.push(structure.lastSwingLow);
-  if (support && support.price < entry) candidates.push(support.price);
-  const structuralStop = candidates.length ? Math.min(...candidates) : entry - 2 * atr1h;
+  // Stop به setup نزدیک متصل است؛ کف قدیمی ۴ ساعته فقط در نبود ناحیه حمایت استفاده می‌شود.
+  const supportFloor = support ? levelLower(support) : null;
+  const structuralStop = supportFloor !== null && supportFloor < entry
+    ? supportFloor
+    : structure.lastSwingLow && structure.lastSwingLow < entry
+      ? structure.lastSwingLow
+      : entry - 2 * atr1h;
   const stop = structuralStop - atr1h * cfg.stopBufferAtr;
   const stopDist = entry - stop;
 
-  // ۷) RR حداقل ۱:۱.۵ نسبت به نزدیک‌ترین مقاومت (حیاتی)
-  // هدف را از یک سطح واقعی می‌گیریم؛ ساختن هدف مصنوعی دقیقاً روی minRR
-  // معیار RR را همیشه true می‌کرد و اعتبار محل خروج را از بین می‌برد.
-  const target = resistance?.price ?? entry;
-  const rr = stopDist > 0 ? (target - entry) / stopDist : 0;
-  const rrOk = resistance !== null && rr >= cfg.minRR;
+  // RR خالص پس از برآورد رفت‌وبرگشت کارمزد و لغزش. اولین مانع نیز باید حداقل ۱R فضا بدهد.
+  const roundTripCost = entry * 2 * ((cfg.feePct + cfg.slippagePct) / 100);
+  const netRisk = stopDist + roundTripCost;
+  const rrAt = (price: number) => netRisk > 0 ? (price - entry - roundTripCost) / netRisk : 0;
+  const firstResistancePrice = firstResistance ? levelLower(firstResistance) : null;
+  const firstResistanceRR = firstResistancePrice !== null ? rrAt(firstResistancePrice) : Infinity;
+  const targetLevel = exitLevels.find((level) => rrAt(Math.max(entry, levelLower(level))) >= cfg.minRR) ?? null;
+  const measuredMove = structure.lastSwingHigh !== null && structure.lastSwingLow !== null
+    ? Math.abs(structure.lastSwingHigh - structure.lastSwingLow)
+    : 0;
+  // در کشف قیمت که هیچ مقاومت تاریخی بالاتر نیست، دامنه آخرین موج ۴ ساعته هدف ساختاری می‌دهد.
+  const projectedTarget = firstResistance === null && measuredMove > 0 ? entry + measuredMove : entry;
+  const target = targetLevel ? levelLower(targetLevel) : projectedTarget;
+  const rr = rrAt(target);
+  const rrOk = firstResistanceRR >= cfg.minFirstResistanceRR && target > entry && rr >= cfg.minRR;
 
   // ۸) Stop معتبر: فاصله منطقی بر حسب ATR (حیاتی)
   const stopAtrDist = stopDist / atr1h;
@@ -95,8 +127,8 @@ export function evaluateEntry({ symbol, candles4h, candles1h, candles15m, cfg }:
       passed: structureOk,
       critical: true,
       detail: structureOk
-        ? `روند صعودی با رویداد ${structure.lastEvent === "BOS_UP" ? "شکست ساختار (BOS)" : "تغییر جهت (CHoCH)"} صعودی`
-        : `ساختار نامناسب (${structure.trend === "down" ? "نزولی" : structure.trend === "up" ? "صعودی بدون شکست تازه" : "خنثی"})`,
+        ? `روند صعودی با ${structure.lastEvent === "BOS_UP" ? "شکست ساختار (BOS)" : "تغییر جهت (CHoCH)"} تازه`
+        : `ساختار نامناسب یا قدیمی (${structure.trend === "down" ? "نزولی" : structure.trend === "up" ? "صعودی بدون شکست تازه" : "خنثی"})`,
     },
     {
       id: "location",
@@ -105,7 +137,7 @@ export function evaluateEntry({ symbol, candles4h, candles1h, candles15m, cfg }:
       critical: true,
       detail: support
         ? locationOk
-          ? `نزدیک سطح حمایت/Order Block/FVG در ${Math.round(support.price).toLocaleString("fa-IR")}`
+          ? `نزدیک ناحیه حمایت/Order Block/FVG در ${Math.round(levelUpper(support)).toLocaleString("fa-IR")}`
           : `فاصله تا نزدیک‌ترین سطح ${(distanceToLevel / atr1h).toFixed(1).replace(".", "٫")} برابر ATR — دور است`
         : "سطح حمایتی معتبری یافت نشد",
     },
@@ -113,17 +145,19 @@ export function evaluateEntry({ symbol, candles4h, candles1h, candles15m, cfg }:
       id: "pattern",
       label: "الگوی تأیید ورود",
       passed: patternOk,
-      critical: true,
-      detail: pattern ? PATTERN_LABELS[pattern.name] : "الگوی کندلی صعودی روی آخرین کندل بسته‌شده ۱ ساعته دیده نشد",
+      critical: false,
+      detail: pattern ? `${PATTERN_LABELS[pattern.name]}${patternAge ? ` (${patternAge + 1} کندل اخیر)` : ""}` : `در ${cfg.entryPatternLookback} کندل اخیر الگوی صعودی دیده نشد`,
     },
     {
       id: "momentum15m",
-      label: "مومنتوم ۱۵ دقیقه",
+      label: "تریگر شکست ۱۵ دقیقه",
       passed: momentumOk,
       critical: true,
       detail: rsi15 !== null
-        ? `RSI پانزده‌دقیقه: ${Math.round(rsi15).toLocaleString("fa-IR")} (بازه مجاز ${cfg.momentumRsiMin}–${cfg.momentumRsiMax})`
-        : "داده کافی برای RSI پانزده‌دقیقه نیست",
+        ? triggerAge !== null
+          ? `شکست سقف سه کندل در ${triggerAge + 1} کندل اخیر؛ RSI: ${Math.round(rsi15).toLocaleString("fa-IR")}`
+          : `شکست سقف سه کندل در پنجره ${cfg.entryTriggerLookback} کندلی دیده نشد`
+        : "داده کافی برای تریگر و RSI پانزده‌دقیقه نیست",
     },
     {
       id: "rsi",
@@ -148,9 +182,11 @@ export function evaluateEntry({ symbol, candles4h, candles1h, candles15m, cfg }:
       label: `نسبت ریسک/ریوارد ≥ ${cfg.minRR}`,
       passed: rrOk,
       critical: true,
-      detail: resistance
-        ? `RR محاسبه‌شده: ${rr.toFixed(2).replace(".", "٫")} تا سطح ${Math.round(target).toLocaleString("fa-IR")}`
-        : "سطح معتبر مقاومت/Order Block/FVG بالای ورود یافت نشد",
+      detail: firstResistance
+        ? `فضای مانع اول ${firstResistanceRR.toFixed(2).replace(".", "٫")}R؛ هدف خالص ${rr.toFixed(2).replace(".", "٫")}R در ${Math.round(target).toLocaleString("fa-IR")}`
+        : measuredMove > 0
+          ? `کشف قیمت؛ هدف دامنه موج ۴ ساعته با RR خالص ${rr.toFixed(2).replace(".", "٫")} در ${Math.round(target).toLocaleString("fa-IR")}`
+          : "مقاومت تاریخی یا دامنه موج معتبر برای هدف یافت نشد",
     },
     {
       id: "validStop",

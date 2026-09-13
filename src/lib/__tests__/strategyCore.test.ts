@@ -3,7 +3,7 @@ import { DEFAULT_CONFIG } from "../config";
 import { fairValueGaps, nearestExitLevel, nearestSupport, orderBlocks } from "../strategy/levels";
 import { detectBullishPatterns } from "../strategy/patterns";
 import { qualifiesEntry } from "../strategy/scoring";
-import { analyzeStructure, isBullishStructure } from "../strategy/structure";
+import { analyzeStructure, hasRecentBearishChoch, isBullishStructure } from "../strategy/structure";
 import type { Candle, CriterionId, CriterionResult, Level } from "../types";
 
 function candle(index: number, open: number, high: number, low: number, close: number): Candle {
@@ -34,17 +34,35 @@ describe("هسته تصمیم ورود", () => {
       id,
       label: id,
       passed: id !== failedId,
-      critical: ["structure", "location", "pattern", "momentum15m", "riskReward", "validStop"].includes(id),
+      critical: ["structure", "location", "momentum15m", "riskReward", "validStop"].includes(id),
       detail: "test",
     }));
   }
 
   it("فیلتر نهایی مومنتوم ۱۵ دقیقه حتی با امتیاز ۷ از ۸ ورود را وتو می‌کند", () => {
-    expect(qualifiesEntry(criteria("momentum15m"), 6)).toBe(false);
+    expect(qualifiesEntry(criteria("momentum15m"), 7)).toBe(false);
   });
 
-  it("با عبور همه شروط حیاتی و حداقل ۶ تأیید اجازه ورود می‌دهد", () => {
-    expect(qualifiesEntry(criteria("rsi"), 6)).toBe(true);
+  it("با عبور همه شروط حیاتی و حداقل ۷ تأیید اجازه ورود می‌دهد", () => {
+    expect(qualifiesEntry(criteria("pattern"), 7)).toBe(true);
+    expect(qualifiesEntry(criteria("rsi"), 7)).toBe(true);
+  });
+
+  it("شکست ساختاری قدیمی را برای ورود یا خروج تازه حساب نمی‌کند", () => {
+    const bullish = {
+      trend: "up" as const,
+      swings: [],
+      events: [{ index: 2, time: 2, type: "BOS_UP" as const }],
+      lastEvent: "BOS_UP" as const,
+      lastSwingLow: 90,
+      lastSwingHigh: 110,
+    };
+    expect(isBullishStructure(bullish, 12, 8)).toBe(false);
+    expect(isBullishStructure(bullish, 10, 8)).toBe(true);
+
+    const bearish = { ...bullish, trend: "down" as const, events: [{ index: 3, time: 3, type: "CHOCH_DOWN" as const }], lastEvent: "CHOCH_DOWN" as const };
+    expect(hasRecentBearishChoch(bearish, 10, 6)).toBe(false);
+    expect(hasRecentBearishChoch(bearish, 9, 6)).toBe(true);
   });
 });
 

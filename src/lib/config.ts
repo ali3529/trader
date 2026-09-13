@@ -1,15 +1,25 @@
 /** تمام آستانه‌های استراتژی قابل تنظیم هستند — هیچ عددی هاردکد در منطق نیست */
 
 export interface StrategyConfig {
+  /** نسخه تنظیمات برای مهاجرت امن مقادیر پیش‌فرض */
+  strategyVersion: number;
   /** درصد ریسک هر معامله از سرمایه */
   riskPerTradePct: number;
   /** حداقل امتیاز ورود (تعداد تأیید از ۸ معیار) */
   minConfirmations: number;
   /** حداقل نسبت ریسک به ریوارد */
   minRR: number;
+  /** حداقل فضای آزاد تا اولین مقاومت بر حسب R */
+  minFirstResistanceRR: number;
+  /** تعداد کندل ۱۵ دقیقه برای معتبرماندن تریگر ورود */
+  entryTriggerLookback: number;
+  /** تعداد کندل یک‌ساعته برای جست‌وجوی الگوی تأیید */
+  entryPatternLookback: number;
+  /** حداکثر سن رویداد ساختاری ورود بر حسب کندل ۴ ساعته */
+  entryStructureBars: number;
   /** RR فعال‌سازی انتقال حد ضرر به نقطه ورود */
   breakEvenRR: number;
-  /** RR خروج جزئی (بستن ۵۰٪ پوزیشن) */
+  /** RR خروج جزئی */
   partialExitRR: number;
   /** درصد بسته‌شده در خروج جزئی */
   partialExitFraction: number;
@@ -39,6 +49,8 @@ export interface StrategyConfig {
   maxOpenPositions: number;
   /** حداکثر درصد سرمایه درگیر */
   maxEngagedCapitalPct: number;
+  /** حداکثر ریسک باز کل پورتفو به درصد سرمایه */
+  maxPortfolioRiskPct: number;
   /** Drawdown برای نصف‌کردن سایز معاملات جدید */
   drawdownHalvePct: number;
   /** Drawdown برای توقف کامل ورودهای جدید */
@@ -114,27 +126,33 @@ export interface StrategyConfig {
 }
 
 export const DEFAULT_CONFIG: StrategyConfig = {
-  riskPerTradePct: 1,
-  minConfirmations: 6,
-  minRR: 1.5,
+  strategyVersion: 2,
+  riskPerTradePct: 0.5,
+  minConfirmations: 7,
+  minRR: 1.8,
+  minFirstResistanceRR: 1,
+  entryTriggerLookback: 3,
+  entryPatternLookback: 2,
+  entryStructureBars: 8,
   breakEvenRR: 1.5,
-  partialExitRR: 2.5,
-  partialExitFraction: 0.5,
-  trailingAtrMult: 1.2,
+  partialExitRR: 1.5,
+  partialExitFraction: 0.3,
+  trailingAtrMult: 1.5,
   rsiPeriod: 14,
   atrPeriod: 14,
   volumeAvgPeriod: 10,
-  minVolumeRatio: 1,
-  rsiMin: 45,
-  rsiMax: 70,
-  momentumRsiMin: 50,
-  momentumRsiMax: 78,
-  stopAtrMin: 0.5,
-  stopAtrMax: 3,
-  maxOpenPositions: 4,
+  minVolumeRatio: 1.1,
+  rsiMin: 42,
+  rsiMax: 68,
+  momentumRsiMin: 48,
+  momentumRsiMax: 72,
+  stopAtrMin: 0.6,
+  stopAtrMax: 2.2,
+  maxOpenPositions: 3,
   maxEngagedCapitalPct: 12,
-  drawdownHalvePct: 8,
-  drawdownStopPct: 12,
+  maxPortfolioRiskPct: 1.5,
+  drawdownHalvePct: 6,
+  drawdownStopPct: 10,
   gridLevels: 25,
   gridZones: 5,
   gridMinRangePct: 4,
@@ -143,7 +161,7 @@ export const DEFAULT_CONFIG: StrategyConfig = {
   apiMaxRetries: 3,
   apiRetryDelayMs: 30_000,
   tickIntervalMs: 15 * 60 * 1000,
-  levelProximityAtr: 0.6,
+  levelProximityAtr: 0.75,
   swingLookback: 2,
   levelClusterAtr: 0.5,
   levelMinTouches: 2,
@@ -198,7 +216,7 @@ export function loadConfig(): StrategyConfig {
   try {
     const raw = localStorage.getItem(CONFIG_KEY);
     if (!raw) return { ...DEFAULT_CONFIG };
-    return normalizeConfig({ ...DEFAULT_CONFIG, ...(JSON.parse(raw) as Partial<StrategyConfig>) });
+    return normalizeConfig(JSON.parse(raw) as Partial<StrategyConfig>);
   } catch {
     return { ...DEFAULT_CONFIG };
   }
@@ -209,15 +227,43 @@ export function saveConfig(cfg: StrategyConfig): void {
 }
 
 /** محدودیت‌های ایمنی حتی با دست‌کاری localStorage قابل عبور نیستند. */
-export function normalizeConfig(value: StrategyConfig): StrategyConfig {
-  const cfg = { ...DEFAULT_CONFIG, ...value };
+export function normalizeConfig(value: Partial<StrategyConfig>): StrategyConfig {
+  const isLegacy = (value.strategyVersion ?? 1) < DEFAULT_CONFIG.strategyVersion;
+  const merged = { ...DEFAULT_CONFIG, ...value };
+  const cfg = isLegacy ? {
+    ...merged,
+    strategyVersion: DEFAULT_CONFIG.strategyVersion,
+    riskPerTradePct: DEFAULT_CONFIG.riskPerTradePct,
+    minConfirmations: DEFAULT_CONFIG.minConfirmations,
+    minRR: DEFAULT_CONFIG.minRR,
+    partialExitRR: DEFAULT_CONFIG.partialExitRR,
+    partialExitFraction: DEFAULT_CONFIG.partialExitFraction,
+    trailingAtrMult: DEFAULT_CONFIG.trailingAtrMult,
+    minVolumeRatio: DEFAULT_CONFIG.minVolumeRatio,
+    rsiMin: DEFAULT_CONFIG.rsiMin,
+    rsiMax: DEFAULT_CONFIG.rsiMax,
+    momentumRsiMin: DEFAULT_CONFIG.momentumRsiMin,
+    momentumRsiMax: DEFAULT_CONFIG.momentumRsiMax,
+    stopAtrMin: DEFAULT_CONFIG.stopAtrMin,
+    stopAtrMax: DEFAULT_CONFIG.stopAtrMax,
+    maxOpenPositions: DEFAULT_CONFIG.maxOpenPositions,
+    drawdownHalvePct: DEFAULT_CONFIG.drawdownHalvePct,
+    drawdownStopPct: DEFAULT_CONFIG.drawdownStopPct,
+    levelProximityAtr: DEFAULT_CONFIG.levelProximityAtr,
+  } : merged;
   return {
     ...cfg,
+    strategyVersion: DEFAULT_CONFIG.strategyVersion,
     riskPerTradePct: clamp(cfg.riskPerTradePct, 0.01, 1),
     minConfirmations: Math.round(clamp(cfg.minConfirmations, 6, 8)),
     minRR: Math.max(1.5, cfg.minRR),
+    minFirstResistanceRR: clamp(cfg.minFirstResistanceRR, 0.5, 3),
+    entryTriggerLookback: Math.round(clamp(cfg.entryTriggerLookback, 1, 8)),
+    entryPatternLookback: Math.round(clamp(cfg.entryPatternLookback, 1, 5)),
+    entryStructureBars: Math.round(clamp(cfg.entryStructureBars, 1, 30)),
     maxOpenPositions: Math.round(clamp(cfg.maxOpenPositions, 1, 4)),
     maxEngagedCapitalPct: clamp(cfg.maxEngagedCapitalPct, 0.1, 12),
+    maxPortfolioRiskPct: clamp(cfg.maxPortfolioRiskPct, 0.1, 4),
     partialExitFraction: clamp(cfg.partialExitFraction, 0.01, 0.5),
     gridLevels: Math.round(clamp(cfg.gridLevels, 2, 100)),
     gridZones: Math.round(clamp(cfg.gridZones, 1, 25)),

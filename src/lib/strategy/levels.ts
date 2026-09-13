@@ -28,6 +28,8 @@ export function supportResistance(candles: Candle[], atrValue: number, cfg?: Str
     .filter((c) => c.count >= (cfg?.levelMinTouches ?? 2))
     .map((c) => ({
       price: c.price,
+      lower: c.price - tol / 2,
+      upper: c.price + tol / 2,
       kind: (c.price <= last.close ? "support" : "resistance") as Level["kind"],
       strength: Math.min(c.count, 5),
       time: c.time,
@@ -58,9 +60,9 @@ export function orderBlocks(candles: Candle[], cfg?: StrategyConfig): Level[] {
     const bearishCandle = c.close < c.open;
     const bullishCandle = c.close > c.open;
     if (bullishMove && bearishCandle) {
-      out.push({ price: c.high, kind: "order_block", side: "demand", strength: 3, time: c.time });
+      out.push({ price: c.high, lower: c.low, upper: c.high, kind: "order_block", side: "demand", strength: 3, time: c.time });
     } else if (bearishMove && bullishCandle) {
-      out.push({ price: c.low, kind: "order_block", side: "supply", strength: 3, time: c.time });
+      out.push({ price: c.low, lower: c.low, upper: c.high, kind: "order_block", side: "supply", strength: 3, time: c.time });
     }
   }
   return out.slice(0, cfg?.maxKeyLevels ?? 5);
@@ -78,6 +80,8 @@ export function fairValueGaps(candles: Candle[], cfg?: StrategyConfig): Level[] 
     if (impulse && b.close > b.open && c.low > a.high) {
       out.push({
         price: (a.high + c.low) / 2,
+        lower: a.high,
+        upper: c.low,
         kind: "fvg",
         side: "demand",
         strength: 2,
@@ -86,6 +90,8 @@ export function fairValueGaps(candles: Candle[], cfg?: StrategyConfig): Level[] 
     } else if (impulse && b.close < b.open && c.high < a.low) {
       out.push({
         price: (a.low + c.high) / 2,
+        lower: c.high,
+        upper: a.low,
         kind: "fvg",
         side: "supply",
         strength: 2,
@@ -100,12 +106,20 @@ export function allLevels(candles: Candle[], atrValue: number, cfg?: StrategyCon
   return [...supportResistance(candles, atrValue, cfg), ...orderBlocks(candles, cfg), ...fairValueGaps(candles, cfg)];
 }
 
+export function levelLower(level: Level): number {
+  return level.lower ?? level.price;
+}
+
+export function levelUpper(level: Level): number {
+  return level.upper ?? level.price;
+}
+
 /** نزدیک‌ترین سطح معتبر زیر قیمت (برای Stop و محل ورود) */
 export function nearestSupport(levels: Level[], price: number): Level | null {
   const below = levels
     .filter((l) => l.kind === "support" || ((l.kind === "order_block" || l.kind === "fvg") && l.side !== "supply"))
-    .filter((l) => l.price < price)
-    .sort((a, b) => b.price - a.price);
+    .filter((l) => levelLower(l) < price)
+    .sort((a, b) => levelUpper(b) - levelUpper(a));
   return below[0] ?? null;
 }
 
@@ -113,18 +127,22 @@ export function nearestSupport(levels: Level[], price: number): Level | null {
 export function nearestResistance(levels: Level[], price: number): Level | null {
   const above = levels
     .filter((l) => l.kind === "resistance")
-    .filter((l) => l.price > price)
-    .sort((a, b) => a.price - b.price);
+    .filter((l) => levelLower(l) > price)
+    .sort((a, b) => levelLower(a) - levelLower(b));
   return above[0] ?? null;
 }
 
 /** نزدیک‌ترین مانع عرضه بالای قیمت: مقاومت، Order Block یا FVG. */
 export function nearestExitLevel(levels: Level[], price: number): Level | null {
-  const above = levels
+  return exitLevelsAbove(levels, price)[0] ?? null;
+}
+
+/** همه موانع عرضه بالای قیمت، مرتب‌شده از نزدیک به دور. */
+export function exitLevelsAbove(levels: Level[], price: number): Level[] {
+  return levels
     .filter((level) => level.kind === "resistance" || ((level.kind === "order_block" || level.kind === "fvg") && level.side !== "demand"))
-    .filter((level) => level.price > price)
-    .sort((a, b) => a.price - b.price || b.strength - a.strength);
-  return above[0] ?? null;
+    .filter((level) => levelLower(level) > price)
+    .sort((a, b) => levelLower(a) - levelLower(b) || b.strength - a.strength);
 }
 
 /**

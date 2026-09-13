@@ -118,7 +118,7 @@ export default function Opportunities() {
         <Card className="border-border/60">
           <CardContent className="flex flex-col items-center gap-3 py-6">
             <EmptyOpportunities size={140} />
-            <p className="text-xs text-muted-foreground">در حال حاضر هیچ نمادی همه شروط حیاتی و حداقل ۶ تأیید از ۸ را ندارد — پایش ادامه دارد.</p>
+            <p className="text-xs text-muted-foreground">در حال حاضر هیچ نمادی همه شروط حیاتی و حداقل {engine.cfg.minConfirmations.toLocaleString("fa-IR")} تأیید از ۸ را ندارد — پایش ادامه دارد.</p>
           </CardContent>
         </Card>
       ) : null}

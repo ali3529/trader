@@ -112,7 +112,7 @@ function freshState(cfg: StrategyConfig): RunnerState {
 
 export async function loadRunnerConfig(): Promise<RunnerConfig> {
   const stored = await readState<Partial<RunnerConfig> | null>(CONFIG_FILE, null);
-  const cfg = normalizeConfig({ ...DEFAULT_CONFIG, ...(stored?.cfg ?? {}) } as StrategyConfig);
+  const cfg = normalizeConfig(stored?.cfg ?? {});
   const symbols =
     Array.isArray(stored?.symbols) && stored.symbols.length
       ? stored.symbols.map((s) => String(s).toUpperCase()).slice(0, MAX_WATCH_SYMBOLS)
@@ -528,7 +528,7 @@ async function manageSymbol(
     state.lastProcessed15m[symbol] = c15[c15.length - 1].time;
 
     const structure = analyzeStructure(c4h, cfg.swingLookback);
-    const chochDown = hasRecentBearishChoch(structure, cfg.exitChochBars);
+    const chochDown = hasRecentBearishChoch(structure, c4h.length - 1, cfg.exitChochBars);
 
     for (const candle of fresh) {
       const current = state.positions.find((p) => p.id === position.id);

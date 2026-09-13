@@ -28,6 +28,7 @@ describe("تنظیمات ایمنی", () => {
       minRR: 0.5,
       maxOpenPositions: 20,
       maxEngagedCapitalPct: 80,
+      maxPortfolioRiskPct: 99,
       apiMinIntervalMs: 1,
       apiMaxRetries: 99,
       apiRetryDelayMs: 1,
@@ -37,9 +38,27 @@ describe("تنظیمات ایمنی", () => {
     expect(cfg.minRR).toBe(1.5);
     expect(cfg.maxOpenPositions).toBe(4);
     expect(cfg.maxEngagedCapitalPct).toBe(12);
+    expect(cfg.maxPortfolioRiskPct).toBe(4);
     expect(cfg.apiMinIntervalMs).toBe(12_000);
     expect(cfg.apiMaxRetries).toBe(3);
     expect(cfg.apiRetryDelayMs).toBe(30_000);
+  });
+
+  it("تنظیمات نسخه قبلی را به پیش‌فرض‌های استراتژی جدید مهاجرت می‌دهد", () => {
+    const legacy = { ...DEFAULT_CONFIG } as Partial<typeof DEFAULT_CONFIG>;
+    delete legacy.strategyVersion;
+    legacy.riskPerTradePct = 1;
+    legacy.minConfirmations = 6;
+    legacy.minRR = 1.5;
+    legacy.partialExitFraction = 0.5;
+    legacy.maxOpenPositions = 4;
+    const migrated = normalizeConfig(legacy);
+    expect(migrated.strategyVersion).toBe(2);
+    expect(migrated.riskPerTradePct).toBe(0.5);
+    expect(migrated.minConfirmations).toBe(7);
+    expect(migrated.minRR).toBe(1.8);
+    expect(migrated.partialExitFraction).toBe(0.3);
+    expect(migrated.maxOpenPositions).toBe(3);
   });
 });
 

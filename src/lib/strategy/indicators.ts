@@ -113,3 +113,11 @@ export function aggregateCandles(candles: Candle[], factor: number): Candle[] {
   }
   return out;
 }
+
+/** آیا کندل‌ها یک بازه کامل و هم‌تراز UTC را بدون شکاف تشکیل می‌دهند؟ */
+export function isCompleteAlignedBucket(candles: Candle[], bucketMs: number, sourceMs: number): boolean {
+  const factor = bucketMs / sourceMs;
+  if (!Number.isInteger(factor) || candles.length !== factor || candles.length === 0) return false;
+  if (candles[0].time % bucketMs !== 0) return false;
+  return candles.every((candle, index) => candle.time === candles[0].time + index * sourceMs);
+}

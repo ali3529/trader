@@ -54,9 +54,10 @@ const GROUPS: { title: string; fields: FieldDef[] }[] = [
   {
     title: "ریسک و سرمایه",
     fields: [
-      { key: "riskPerTradePct", label: "ریسک هر معامله (٪)", step: 0.1, hint: "حداکثر پیشنهادی ۱٪" },
+      { key: "riskPerTradePct", label: "ریسک هر معامله (٪)", step: 0.1, hint: "پیش‌فرض محافظه‌کارانه ۰.۵٪" },
       { key: "maxOpenPositions", label: "حداکثر پوزیشن هم‌زمان", step: 1 },
       { key: "maxEngagedCapitalPct", label: "حداکثر سرمایه درگیر (٪)", step: 1 },
+      { key: "maxPortfolioRiskPct", label: "حداکثر ریسک باز پورتفو (٪)", step: 0.1 },
       { key: "drawdownHalvePct", label: "Drawdown نصف‌کردن سایز (٪)", step: 1 },
       { key: "drawdownStopPct", label: "Drawdown توقف ورود (٪)", step: 1 },
       { key: "paperInitialCapital", label: "سرمایه اولیه پولی (تومان)", step: 1000000 },
@@ -68,6 +69,10 @@ const GROUPS: { title: string; fields: FieldDef[] }[] = [
     fields: [
       { key: "minConfirmations", label: "حداقل تأیید از ۸ معیار", step: 1 },
       { key: "minRR", label: "حداقل نسبت ریسک/ریوارد", step: 0.1 },
+      { key: "minFirstResistanceRR", label: "حداقل فضا تا مانع اول (R)", step: 0.1 },
+      { key: "entryTriggerLookback", label: "اعتبار تریگر ۱۵ دقیقه (کندل)", step: 1 },
+      { key: "entryPatternLookback", label: "اعتبار الگوی ۱ ساعته (کندل)", step: 1 },
+      { key: "entryStructureBars", label: "اعتبار ساختار ۴ ساعته (کندل)", step: 1 },
       { key: "rsiPeriod", label: "دوره RSI", step: 1 },
       { key: "atrPeriod", label: "دوره ATR", step: 1 },
       { key: "rsiMin", label: "کف RSI سالم یک‌ساعته", step: 1 },
@@ -87,7 +92,7 @@ const GROUPS: { title: string; fields: FieldDef[] }[] = [
       { key: "breakEvenRR", label: "RR انتقال Stop به ورود", step: 0.1 },
       { key: "trailingAtrMult", label: "فاصله Trailing (×ATR)", step: 0.1 },
       { key: "partialExitRR", label: "RR خروج جزئی", step: 0.1 },
-      { key: "partialExitFraction", label: "کسر خروج جزئی (۰.۵ = ۵۰٪)", step: 0.05 },
+      { key: "partialExitFraction", label: "کسر خروج جزئی (۰.۳ = ۳۰٪)", step: 0.05 },
       { key: "feePct", label: "کارمزد صرافی (٪)", step: 0.01 },
       { key: "slippagePct", label: "لغزش قیمت (٪)", step: 0.01 },
     ],
