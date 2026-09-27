@@ -123,6 +123,14 @@ export interface StrategyConfig {
   paperInitialCapital: number;
   /** حداقل ارزش سفارش (تومان) */
   minOrderToman: number;
+  /** گیت تصمیم‌گیری AI برای ورود فعال است؟ */
+  aiGateEnabled: boolean;
+  /** حداقل noul (۰ تا ۱) مورد نیاز برای تأیید ورود توسط AI */
+  aiMinDecision: number;
+  /** امتیاز ریسک AI (۰ تا ۴) در این حد و بالاتر → ورود مسدود */
+  aiMaxRiskScore: number;
+  /** ضریب کاهش سایز پوزیشن وقتی AI «کاهش پوزیشن» می‌گوید */
+  aiReduceFraction: number;
 }
 
 export const DEFAULT_CONFIG: StrategyConfig = {
@@ -187,6 +195,10 @@ export const DEFAULT_CONFIG: StrategyConfig = {
   slippagePct: 0.05,
   paperInitialCapital: 100_000_000,
   minOrderToman: 300_000,
+  aiGateEnabled: true,
+  aiMinDecision: 0.6,
+  aiMaxRiskScore: 3,
+  aiReduceFraction: 0.5,
 };
 
 export const MAX_WATCH_SYMBOLS = 20;
@@ -294,6 +306,10 @@ export function normalizeConfig(value: Partial<StrategyConfig>): StrategyConfig 
     morningStarRecoveryRatio: clamp(cfg.morningStarRecoveryRatio, 0.1, 1),
     minOrderToman: Math.max(1, cfg.minOrderToman),
     paperInitialCapital: Math.max(1, cfg.paperInitialCapital),
+    aiGateEnabled: Boolean(cfg.aiGateEnabled),
+    aiMinDecision: clamp(cfg.aiMinDecision, 0.1, 0.95),
+    aiMaxRiskScore: Math.round(clamp(cfg.aiMaxRiskScore, 1, 4)),
+    aiReduceFraction: clamp(cfg.aiReduceFraction, 0.1, 1),
   };
 }
 

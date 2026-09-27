@@ -1,87 +1,344 @@
 import type { SymbolScan } from "./types";
 
-export type AiProvider = "ollama" | "qwen-cloud";
+
+// --------------------
+// AI Provider
+// --------------------
+
+export type AiProvider =
+  | "ollama"
+  | "jev";
+
+
+
+// --------------------
+// Config
+// --------------------
 
 export interface AiConfigView {
+
   provider: AiProvider;
+
   ollamaBaseUrl: string;
+
   ollamaModel: string;
-  qwenBaseUrl: string;
-  qwenModel: string;
-  hasToken: boolean;
+
+  /** آدرس API ذخیره‌شده (ممکن است خالی باشد = پیش‌فرض SDK) */
+  jevBaseUrl: string;
+
+  /** نام مدل ذخیره‌شده */
+  jevModel: string;
+
+  jevConfigured: boolean;
+
   tokenMasked: string | null;
+
+  hasToken: boolean;
+
 }
+
+
 
 export interface AiConfigPayload {
+
   provider: AiProvider;
+
   ollamaBaseUrl: string;
+
   ollamaModel: string;
-  qwenBaseUrl: string;
-  qwenModel: string;
-  /** فقط وقتی غیرخالی بفرستید که قصد جایگزینی توکن ذخیره‌شده را دارید */
-  qwenToken: string;
+
+  jevBaseUrl: string;
+
+  jevModel: string;
+
+  /**
+   * Only send when replacing stored token
+   */
+  jevToken: string;
+
 }
 
-export interface QwenStatus {
+
+
+// --------------------
+// Jev Status
+// --------------------
+
+export interface JevStatus {
+
   provider?: AiProvider;
+
   reachable: boolean;
+
   ready: boolean;
-  model: string;
-  installedModels: string[];
+
+  model?: string;
+
+  installedModels?: string[];
+
   error?: string;
+
 }
 
-export async function fetchAiConfig(): Promise<AiConfigView> {
-  const response = await fetch("/api/ai/config", { cache: "no-store" });
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  return response.json() as Promise<AiConfigView>;
-}
 
-export async function saveAiConfig(payload: AiConfigPayload): Promise<void> {
-  const response = await fetch("/api/ai/config", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-  if (!response.ok) {
-    const body = (await response.json().catch(() => null)) as {
-      statusMessage?: string;
-      message?: string;
-    } | null;
-    throw new Error(body?.statusMessage ?? body?.message ?? `HTTP ${response.status}`);
-  }
-}
 
-export interface QwenAnalysis {
-  summary: string;
-  verdict: "support" | "neutral" | "caution";
+// --------------------
+// Jev Response Types
+// --------------------
+
+
+export interface JevRisk {
+
+  score: number;
+
   confidence: number;
-  observations: string[];
-  risks: string[];
+
+  label:
+    | "No risk"
+    | "Low risk"
+    | "Medium risk"
+    | "High risk"
+    | "Extreme risk";
+
 }
 
-export async function fetchQwenStatus(): Promise<QwenStatus> {
-  const response = await fetch("/api/ai/status", { cache: "no-store" });
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  return response.json() as Promise<QwenStatus>;
+
+
+export interface JevAction {
+
+  type: "score";
+
+  score: number;
+
+  confidence: number;
+
+  legend: Record<string,string>;
+
+  probabilities: Record<string,number>;
+
 }
 
-export async function analyzeOpportunity(scan: SymbolScan): Promise<QwenAnalysis> {
-  if (!scan.signal) throw new Error("سیگنالی برای تحلیل وجود ندارد");
-  const response = await fetch("/api/ai/analyze", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      symbol: scan.symbol,
-      price: scan.lastPrice,
-      changePct24h: scan.changePct24h,
-      volume24h: scan.volume24h,
-      signal: scan.signal,
-    }),
-  });
-  if (!response.ok) {
-    const body = await response.json().catch(() => null) as { statusMessage?: string; message?: string } | null;
-    throw new Error(body?.statusMessage ?? body?.message ?? `HTTP ${response.status}`);
+
+
+export interface JevAnalysis {
+
+  decision: number;
+
+  risk: JevRisk;
+
+  action: JevAction;
+
+}
+
+
+
+// --------------------
+// Config API
+// --------------------
+
+
+export async function fetchAiConfig()
+: Promise<AiConfigView> {
+
+
+  const response =
+    await fetch(
+      "/api/ai/config",
+      {
+        cache:"no-store"
+      }
+    );
+
+
+  if(!response.ok){
+
+    throw new Error(
+      `HTTP ${response.status}`
+    );
+
   }
-  return response.json() as Promise<QwenAnalysis>;
+
+
+  return response.json();
+
+}
+
+
+
+
+export async function saveAiConfig(
+  payload:AiConfigPayload
+):Promise<void>{
+
+
+  const response =
+    await fetch(
+      "/api/ai/config",
+      {
+
+        method:"POST",
+
+        headers:{
+          "Content-Type":
+            "application/json"
+        },
+
+        body:
+          JSON.stringify(payload)
+
+      }
+    );
+
+
+
+  if(!response.ok){
+
+
+    const body =
+      await response
+      .json()
+      .catch(()=>null);
+
+
+
+    throw new Error(
+      body?.message ??
+      body?.statusMessage ??
+      `HTTP ${response.status}`
+    );
+
+
+  }
+
+}
+
+
+
+
+// --------------------
+// Jev Status
+// --------------------
+
+
+export async function fetchJevStatus()
+:Promise<JevStatus>{
+
+
+  const response =
+    await fetch(
+      "/api/ai/status",
+      {
+        cache:"no-store"
+      }
+    );
+
+
+
+  if(!response.ok){
+
+    throw new Error(
+      `HTTP ${response.status}`
+    );
+
+  }
+
+
+
+  return response.json();
+
+}
+
+
+
+
+// --------------------
+// Jev Analyze
+// --------------------
+
+
+export async function analyzeOpportunity(
+  scan:SymbolScan
+):Promise<JevAnalysis>{
+
+
+
+  if(!scan.signal){
+
+    throw new Error(
+      "سیگنالی برای تحلیل وجود ندارد"
+    );
+
+  }
+
+
+
+
+  const response =
+    await fetch(
+      "/api/ai/analyze",
+      {
+
+        method:"POST",
+
+        headers:{
+          "Content-Type":
+            "application/json"
+        },
+
+
+        body:
+          JSON.stringify({
+
+            symbol:
+              scan.symbol,
+
+
+            price:
+              scan.lastPrice,
+
+
+            changePct24h:
+              scan.changePct24h,
+
+
+            volume24h:
+              scan.volume24h,
+
+
+            signal:
+              scan.signal
+
+          })
+
+      }
+    );
+
+
+
+
+
+  if(!response.ok){
+
+
+    const body =
+      await response
+      .json()
+      .catch(()=>null);
+
+
+
+    throw new Error(
+      body?.message ??
+      body?.statusMessage ??
+      `HTTP ${response.status}`
+    );
+
+
+  }
+
+
+
+
+  return response.json();
+
 }

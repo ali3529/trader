@@ -4,6 +4,7 @@ import { getBotMode, type BotMode } from "./botMode";
 import { loadKeys, privateRequest, publicGet } from "./nobitex";
 import { fetchAccount as rzFetchAccount, fetchCandles as ramzinexCandles, loadRamzinexKeys } from "./ramzinex";
 import { submitRealOrder } from "./orderExecution";
+import { evaluateAiGate } from "./aiGate";
 import {
   formatClose,
   formatDigest,
@@ -674,14 +675,38 @@ async function manageSymbol(
     return;
   }
 
+  // گیت تصمیم‌گیری AI: Jev فقط مشاوره می‌دهد — در رد/ابهام ورود انجام نمی‌شود
+  // و در «کاهش پوزیشن» سایز نصف می‌شود. این گیت هرگز سفارشی صادر نمی‌کند.
+  const aiGate = await evaluateAiGate(
+    { symbol, signal, scan: state.scans[symbol]! },
+    {
+      aiGateEnabled: cfg.aiGateEnabled,
+      aiMinDecision: cfg.aiMinDecision,
+      aiMaxRiskScore: cfg.aiMaxRiskScore,
+      aiReduceFraction: cfg.aiReduceFraction,
+    },
+  );
+  if (!aiGate.allowed) {
+    state.scans[symbol] = { ...state.scans[symbol]!, status: "blocked", note: aiGate.reason };
+    return;
+  }
+  if (aiGate.analysis) {
+    notes.push(
+      `${symbol}: AI تصمیم=${(aiGate.analysis.decision * 100).toFixed(0)}٪ ریسک=${aiGate.analysis.risk.label || aiGate.analysis.risk.score.toFixed(1)}`,
+    );
+  }
+
   let fill = signal.entry * (1 + cfg.slippagePct / 100);
-  let qty = sizing.qty;
+  let qty = sizing.qty * aiGate.sizeFraction;
+  if (aiGate.sizeFraction < 1) {
+    notes.push(`${symbol}: ${aiGate.reason}`);
+  }
   let posMode: Position["mode"] = "paper";
   if (real) {
     const executed = await placeRealOrder(notes, {
       symbol,
       side: "buy",
-      qty: sizing.qty,
+      qty,
       price: signal.entry,
       stop: signal.stop,
       positionId: `${symbol}-${signal.time}`,
