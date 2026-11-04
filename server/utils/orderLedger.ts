@@ -35,6 +35,12 @@ export async function recordBotOrder(record: BotOrderRecord): Promise<void> {
   await writeState(LEDGER_FILE, records.slice(-MAX_RECORDS));
 }
 
+/** سفارش مبهم روی همان نماد باید هر ارسال تازه را تا بررسی دستی مسدود کند. */
+export function hasUnresolvedOrder(records: BotOrderRecord[], symbol: string): boolean {
+  const normalized = symbol.toUpperCase().replace(/IRR$/, "IRT");
+  return records.some((record) => record.reconciliationRequired && record.symbol === normalized);
+}
+
 function validRecord(record: BotOrderRecord): boolean {
   return Boolean(
     record &&

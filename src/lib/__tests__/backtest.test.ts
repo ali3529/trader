@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_CONFIG } from "../config";
 import { runBacktest } from "../backtest/backtest";
+import { isCompleteAlignedBucket } from "../strategy/indicators";
 import type { Candle } from "../types";
 
 const cfg = { ...DEFAULT_CONFIG };
@@ -20,7 +21,7 @@ function mulberry32(seed: number): () => number {
 /** مسیر تصادفی با موج‌های روند — شبیه بازار واقعی برای تست موتور */
 function makeCandles(n: number, seed = 42): Candle[] {
   const rnd = mulberry32(seed);
-  const t0 = 1_700_000_000_000;
+  const t0 = Date.UTC(2023, 10, 14, 0, 0, 0);
   let price = 50_000;
   const out: Candle[] = [];
   for (let i = 0; i < n; i++) {
@@ -100,5 +101,12 @@ describe("runBacktest", () => {
   it("با داده خیلی کوتاه هم بدون خطا اجرا می‌شود", () => {
     const r = runBacktest({ symbol: "BTCIRT", candles15m: makeCandles(10), cfg });
     expect(r.trades).toHaveLength(0);
+  });
+
+  it("فقط بازه کامل و هم‌تراز UTC را تجمیع می‌کند", () => {
+    const aligned = makeCandles(4);
+    const shifted = aligned.map((candle) => ({ ...candle, time: candle.time + 15 * 60 * 1000 }));
+    expect(isCompleteAlignedBucket(aligned, 60 * 60 * 1000, 15 * 60 * 1000)).toBe(true);
+    expect(isCompleteAlignedBucket(shifted, 60 * 60 * 1000, 15 * 60 * 1000)).toBe(false);
   });
 });

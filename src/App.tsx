@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { BotProvider } from "@/context/BotContext";
 import AppShell from "@/components/layout/AppShell";
+import BasicAuthDialog from "@/components/BasicAuthDialog";
 import Index from "./pages/Index";
 import Opportunities from "./pages/Opportunities";
 import Positions from "./pages/Positions";
@@ -21,6 +22,7 @@ const App = () => (
     <TooltipProvider>
       <Toaster />
       <Sonner />
+      <BasicAuthDialog />
       <BotProvider>
         <BrowserRouter>
           <Routes>

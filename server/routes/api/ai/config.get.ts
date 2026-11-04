@@ -1,6 +1,6 @@
 import { defineHandler } from "nitro";
 import { assertSensitiveRequest } from "../../../utils/requestSecurity";
-import { DEFAULT_QWEN_BASE_URL, loadAiConfig } from "../../../utils/ollama";
+import { loadAiConfig } from "../../../utils/jev";
 
 /** تنظیمات AI بدون توکن کامل — توکن هرگز به فرانت‌اند برنمی‌گردد */
 export default defineHandler(async (event) => {
@@ -13,18 +13,18 @@ export default defineHandler(async (event) => {
       provider: "ollama" as const,
       ollamaBaseUrl: "http://127.0.0.1:11434",
       ollamaModel: "qwen3:4b",
-      qwenBaseUrl: DEFAULT_QWEN_BASE_URL,
-      qwenModel: "qwen-plus",
-      qwenToken: "",
+      jevBaseUrl: "",
+      jevModel: "jev-latest",
+      jevToken: "",
     };
   }
   return {
     provider: config.provider,
     ollamaBaseUrl: config.ollamaBaseUrl,
     ollamaModel: config.ollamaModel,
-    qwenBaseUrl: config.qwenBaseUrl,
-    qwenModel: config.qwenModel,
-    hasToken: Boolean(config.qwenToken),
-    tokenMasked: config.qwenToken ? `••••${config.qwenToken.slice(-4)}` : null,
+    jevBaseUrl: config.jevBaseUrl,
+    jevModel: config.jevModel,
+    hasToken: Boolean(config.jevToken),
+    tokenMasked: config.jevToken ? `••••${config.jevToken.slice(-4)}` : null,
   };
 });

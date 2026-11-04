@@ -1,9 +1,25 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_CONFIG, normalizeConfig } from "../config";
+import { DEFAULT_CONFIG, DEFAULT_SYMBOLS, MAX_WATCH_SYMBOLS, normalizeConfig } from "../config";
 import { buildGrid, nearestExitLevel } from "../strategy/levels";
 import type { Candle, Level } from "../types";
 
 describe("تنظیمات ایمنی", () => {
+  it("فهرست پیش‌فرض فقط شامل نمادهای انتخاب‌شده و در محدوده ظرفیت رانر است", () => {
+    expect(DEFAULT_SYMBOLS).toHaveLength(15);
+    expect(DEFAULT_SYMBOLS).not.toContain("TONIRT");
+    expect(DEFAULT_SYMBOLS).toEqual(expect.arrayContaining([
+      "ZECIRT",
+      "ENAIRT",
+      "HYPEIRT",
+      "TAOIRT",
+      "AEROIRT",
+      "USELESSIRT",
+      "ONDOIRT",
+      "SUIIRT",
+    ]));
+    expect(DEFAULT_SYMBOLS.length).toBeLessThanOrEqual(MAX_WATCH_SYMBOLS);
+  });
+
   it("محدودیت‌های حیاتی با localStorage قابل عبور نیستند", () => {
     const cfg = normalizeConfig({
       ...DEFAULT_CONFIG,
@@ -12,18 +28,37 @@ describe("تنظیمات ایمنی", () => {
       minRR: 0.5,
       maxOpenPositions: 20,
       maxEngagedCapitalPct: 80,
+      maxPortfolioRiskPct: 99,
       apiMinIntervalMs: 1,
       apiMaxRetries: 99,
       apiRetryDelayMs: 1,
     });
-    expect(cfg.riskPerTradePct).toBe(1);
-    expect(cfg.minConfirmations).toBe(6);
-    expect(cfg.minRR).toBe(1.5);
-    expect(cfg.maxOpenPositions).toBe(4);
-    expect(cfg.maxEngagedCapitalPct).toBe(12);
+    expect(cfg.riskPerTradePct).toBe(3);
+    expect(cfg.minConfirmations).toBe(5);
+    expect(cfg.minRR).toBe(1.2);
+    expect(cfg.maxOpenPositions).toBe(8);
+    expect(cfg.maxEngagedCapitalPct).toBe(60);
+    expect(cfg.maxPortfolioRiskPct).toBe(8);
     expect(cfg.apiMinIntervalMs).toBe(12_000);
     expect(cfg.apiMaxRetries).toBe(3);
     expect(cfg.apiRetryDelayMs).toBe(30_000);
+  });
+
+  it("تنظیمات نسخه قبلی را به پیش‌فرض‌های استراتژی جدید مهاجرت می‌دهد", () => {
+    const legacy = { ...DEFAULT_CONFIG } as Partial<typeof DEFAULT_CONFIG>;
+    delete legacy.strategyVersion;
+    legacy.riskPerTradePct = 0.5;
+    legacy.minConfirmations = 7;
+    legacy.minRR = 1.8;
+    legacy.partialExitFraction = 0.5;
+    legacy.maxOpenPositions = 3;
+    const migrated = normalizeConfig(legacy);
+    expect(migrated.strategyVersion).toBe(3);
+    expect(migrated.riskPerTradePct).toBe(1);
+    expect(migrated.minConfirmations).toBe(6);
+    expect(migrated.minRR).toBe(1.4);
+    expect(migrated.partialExitFraction).toBe(0.3);
+    expect(migrated.maxOpenPositions).toBe(5);
   });
 });
 

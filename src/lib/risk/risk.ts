@@ -36,8 +36,8 @@ export interface SizingResult {
 }
 
 /**
- * سایز پوزیشن از فاصله ورود تا Stop و ریسک ۱٪ سرمایه،
- * با سقف سرمایه درگیر، سقف Grid و محدودیت‌های Drawdown.
+ * سایز پوزیشن از فاصله ورود تا Stop و ریسک تنظیم‌شده سرمایه،
+ * با سقف ریسک باز پورتفو، سرمایه درگیر، Grid و Drawdown.
  */
 export function computePositionSize({
   equity,
@@ -73,12 +73,23 @@ export function computePositionSize({
   let riskAmount = equity * (cfg.riskPerTradePct / 100);
   if (state === "halved") riskAmount /= 2;
 
+  const openRisk = openPositions.reduce(
+    (sum, position) => sum + Math.max(0, position.entry - position.stop) * position.qty,
+    0,
+  );
+  const remainingRisk = equity * (cfg.maxPortfolioRiskPct / 100) - openRisk;
+  if (remainingRisk <= 0) {
+    return { allowed: false, qty: 0, notional: 0, riskAmount: 0, reason: `سقف ریسک باز پورتفو (${cfg.maxPortfolioRiskPct}٪) تکمیل است` };
+  }
+  riskAmount = Math.min(riskAmount, remainingRisk);
+
   let qty = riskAmount / stopDist;
   const gridCap = gridAllocationCapital(equity, cfg, grid);
   const notionalCap = Math.min(remainingBudget, gridCap);
   if (qty * entry > notionalCap) qty = notionalCap / entry;
 
   const notional = qty * entry;
+  const actualRisk = qty * stopDist;
   if (notional < cfg.minOrderToman) {
     return { allowed: false, qty: 0, notional: 0, riskAmount: 0, reason: `سایز محاسبه‌شده کمتر از حداقل سفارش (${cfg.minOrderToman.toLocaleString("fa-IR")} تومان) است` };
   }
@@ -86,8 +97,8 @@ export function computePositionSize({
     allowed: true,
     qty,
     notional,
-    riskAmount,
-    reason: state === "halved" ? "سایز به دلیل Drawdown نصف شد" : "سایز استاندارد",
+    riskAmount: actualRisk,
+    reason: state === "halved" ? "سایز به دلیل Drawdown نصف شد" : remainingRisk < equity * (cfg.riskPerTradePct / 100) ? "سایز با سقف ریسک باز پورتفو محدود شد" : "سایز استاندارد",
   };
 }
 
@@ -102,8 +113,8 @@ export function positionEquity(p: Position, price: number): number {
 
 /**
  * مدیریت معامله روی هر کندل جدید:
- * RR=1.5 → Stop به ورود منتقل (Break Even) و Trailing با فاصله ۱.۲×ATR فعال،
- * RR=2.5 → بستن ۵۰٪ پوزیشن.
+ * Break Even فقط با بسته‌شدن کندل بالای RR تنظیم‌شده فعال می‌شود؛
+ * خروج جزئی و Trailing نیز از تنظیمات خوانده می‌شوند.
  * خروجی: دستورهای اجراشده + پوزیشن به‌روزشده.
  */
 export interface ManageResult {
@@ -113,7 +124,7 @@ export interface ManageResult {
   updated: boolean;
 }
 
-export function managePosition(p: Position, candle: { high: number; low: number; close: number }, atr: number, cfg: StrategyConfig): ManageResult {
+export function managePosition(p: Position, candle: { open?: number; high: number; low: number; close: number }, atr: number, cfg: StrategyConfig): ManageResult {
   let updated = false;
   let stop = p.stop;
   let trailingActive = p.trailingActive;
@@ -128,7 +139,7 @@ export function managePosition(p: Position, candle: { high: number; low: number;
 
   // ۱) بررسی برخورد Stop (با کمترین قیمت کندل)
   if (candle.low <= stop) {
-    const exitPrice = stop;
+    const exitPrice = typeof candle.open === "number" && candle.open < stop ? candle.open : stop;
     const pnl = (exitPrice - p.entry) * qty;
     const reason: Trade["exitReason"] = !breakEvenDone ? "stop_loss" : trailingActive ? "trailing_stop" : "break_even_stop";
     return {
@@ -141,16 +152,17 @@ export function managePosition(p: Position, candle: { high: number; low: number;
 
   const favorable = candle.high - p.entry;
   const currentRR = riskPerUnit > 0 ? favorable / riskPerUnit : 0;
+  const closeRR = riskPerUnit > 0 ? (candle.close - p.entry) / riskPerUnit : 0;
 
-  // ۲) در RR=1.5: Break Even + فعال‌سازی Trailing
-  if (!breakEvenDone && currentRR >= cfg.breakEvenRR) {
+  // ۲) Break Even و Trailing فقط پس از تأیید با close کندل
+  if (!breakEvenDone && closeRR >= cfg.breakEvenRR) {
     stop = Math.max(stop, p.entry);
     breakEvenDone = true;
     trailingActive = true;
     updated = true;
   }
 
-  // ۳) در RR=2.5: بستن جزئی ۵۰٪
+  // ۳) خروج جزئی روی آستانه RR تنظیم‌شده
   if (!partialDone && currentRR >= cfg.partialExitRR) {
     const closeQty = qty * cfg.partialExitFraction;
     const price = p.entry + riskPerUnit * cfg.partialExitRR;

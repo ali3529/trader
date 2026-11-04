@@ -1,65 +1,66 @@
-import { defineHandler } from "nitro";
-import { createError, readBody } from "nitro/h3";
-import { analyzeWithAi, loadAiConfig } from "../../../utils/ollama";
+import {
+  defineEventHandler,
+  readBody,
+  createError
+} from "h3";
+
+
+import {
+  loadAiConfig,
+  analyzeWithJev,
+  hasJevToken
+} from "../../../utils/jev";
 import { assertSensitiveRequest } from "../../../utils/requestSecurity";
 
-interface AnalysisRequest {
-  symbol?: string;
-  price?: number;
-  changePct24h?: number;
-  volume24h?: number;
-  signal?: {
-    qualified?: boolean;
-    score?: number;
-    rr?: number;
-    entry?: number;
-    stop?: number;
-    target?: number;
-    pattern?: string | null;
-    volumeRatio?: number;
-    criteria?: Array<{ label?: string; passed?: boolean; critical?: boolean; detail?: string }>;
-  };
-}
-
-export default defineHandler(async (event) => {
-  assertSensitiveRequest(event, { mutation: true });
-  const body = await readBody<AnalysisRequest>(event);
-  if (!body?.symbol || !/^[A-Z]{2,12}IRT$/.test(body.symbol) || !body.signal) {
-    throw createError({ statusCode: 400, statusMessage: "داده سیگنال معتبر نیست" });
+/**
+ * تحلیل مشورهٔ یک فرصت با Jev. این مسیر فقط قضاوت می‌کند و هیچ سفارشی
+ * صادر نمی‌کند — تصمیم نهایی ورود در رانر (aiGate) گرفته می‌شود.
+ */
+export default defineEventHandler(async (event) => {
+  // This route spends the server-side Jev token and must never be public.
+  assertSensitiveRequest(event);
+  const body = await readBody(event);
+  if (!body || typeof body !== "object") {
+    throw createError({ statusCode: 400, statusMessage: "بدنهٔ درخواست نامعتبر است" });
   }
-  const snapshot = {
-    symbol: body.symbol,
-    price: finite(body.price),
-    changePct24h: finite(body.changePct24h),
-    volume24h: finite(body.volume24h),
-    signal: {
-      qualified: body.signal.qualified === true,
-      score: finite(body.signal.score),
-      rr: finite(body.signal.rr),
-      entry: finite(body.signal.entry),
-      stop: finite(body.signal.stop),
-      target: finite(body.signal.target),
-      pattern: String(body.signal.pattern ?? "none").slice(0, 60),
-      volumeRatio: finite(body.signal.volumeRatio),
-      criteria: (body.signal.criteria ?? []).slice(0, 8).map((item) => ({
-        label: String(item.label ?? "").slice(0, 100),
-        passed: item.passed === true,
-        critical: item.critical === true,
-        detail: String(item.detail ?? "").slice(0, 220),
-      })),
-    },
-  };
+
+  const symbol = String(body.symbol ?? "").trim().toUpperCase();
+  const price = Number(body.price);
+  const changePct24h = Number(body.changePct24h);
+  const volume24h = Number(body.volume24h);
+  if (!/^[A-Z0-9]{3,24}$/.test(symbol) || !Number.isFinite(price) || price <= 0 ||
+      !Number.isFinite(changePct24h) || !Number.isFinite(volume24h) || volume24h < 0) {
+    throw createError({ statusCode: 400, statusMessage: "snapshot معامله نامعتبر است" });
+  }
+  const signal: unknown = body.signal;
   try {
-    return await analyzeWithAi(await loadAiConfig(), snapshot);
+    if (JSON.stringify(signal ?? null).length > 12_000) {
+      throw new Error("snapshot too large");
+    }
+  } catch {
+    throw createError({ statusCode: 400, statusMessage: "snapshot معامله نامعتبر است" });
+  }
+
+  let config;
+  try {
+    config = await loadAiConfig();
   } catch (error) {
+    throw createError({ statusCode: 500, statusMessage: (error as Error).message });
+  }
+  if (config.provider !== "jev" || !hasJevToken(config.jevToken)) {
     throw createError({
-      statusCode: 503,
-      statusMessage: `تحلیل AI در دسترس نیست: ${(error as Error).message}`,
+      statusCode: 400,
+      statusMessage: "Jev پیکربندی نشده است — ابتدا توکن را در تنظیمات ذخیره کنید",
     });
   }
-});
 
-function finite(value: unknown): number | null {
-  const n = Number(value);
-  return Number.isFinite(n) ? n : null;
-}
+  const analysis = await analyzeWithJev(config, {
+    symbol,
+    price,
+    changePct24h,
+    volume24h,
+    signal,
+  });
+
+  return analysis;
+});

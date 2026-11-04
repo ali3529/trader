@@ -87,6 +87,30 @@ interface RzEnvelope<T> {
   message?: string;
 }
 
+/**
+ * بیشتر endpointهای رمزینکس پاسخ را داخل `data` می‌گذارند، اما endpoint چارت
+ * مستقیماً payload استاندارد UDF (`{ s, t, o, ... }`) را برمی‌گرداند.
+ */
+export function unwrapPublicResponse<T>(payload: unknown, statusCode = 502): T {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return payload as T;
+
+  const json = payload as Record<string, unknown>;
+  const hasStatus = typeof json.status === "number";
+  const hasData = Object.prototype.hasOwnProperty.call(json, "data");
+  if (!hasStatus && !hasData) return payload as T;
+
+  if (hasStatus && json.status !== 0) {
+    throw new RamzinexError(
+      String(json.description ?? json.message ?? `ramzinex status ${json.status}`),
+      statusCode,
+    );
+  }
+  if (!hasData || json.data === undefined) {
+    throw new RamzinexError("پاسخ رمزینکس فیلد data ندارد", statusCode);
+  }
+  return json.data as T;
+}
+
 export async function publicGet<T>(path: string, params: Record<string, string> = {}, base = PUBLIC_BASE): Promise<T> {
   const qs = new URLSearchParams(params).toString();
   const url = `${base}${path}${qs ? `?${qs}` : ""}`;
@@ -104,11 +128,7 @@ export async function publicGet<T>(path: string, params: Record<string, string> 
         continue;
       }
       if (!res.ok) throw new RamzinexError(`ramzinex ${res.status}: ${text.slice(0, 160)}`, res.status, res.status >= 500);
-      const json = JSON.parse(text) as RzEnvelope<T>;
-      if (json.status !== 0 && json.status !== undefined) {
-        throw new RamzinexError(json.description ?? json.message ?? `ramzinex status ${json.status}`, res.status || 502);
-      }
-      return json.data as T;
+      return unwrapPublicResponse<T>(JSON.parse(text), res.status || 502);
     } catch (err) {
       console.log(`[ramzinex] GET ${url} -> FAILED | ${errDetail(err)}`);
       lastErr = err;
@@ -211,17 +231,41 @@ export async function privateRequest<T>(
 
 export interface MarketInfo {
   id: number;
+  /** نماد جفت‌ارز نرمال‌شده، مثل BTCIRR */
   symbol: string;
+  /** نماد مورد انتظار API چارت، مثل btcirr (از trading_chart_settings.ramzinex) */
+  chartSymbol: string;
 }
 
 interface PairsCache {
   at: number;
   byNorm: Map<string, MarketInfo>;
   byId: Map<number, string>;
+  sample: unknown[];
 }
 
 let pairsCache: PairsCache | null = null;
 const norm = (s: string): string => s.toUpperCase().replace(/[^A-Z0-9]/g, "");
+
+/**
+ * اسکیمای واقعی /pairs (نمونهٔ تأییدشده از سرور رمزینکس):
+ * { id, slug, base_currency:{ symbol:{ en:"btc" } }, quote_currency:{ symbol:{ en:"irr" } },
+ *   trading_chart_settings:{ ramzinex:"btcirr" } }
+ * برخی نمادها فاصله/پرانتز دارند (مثل "xaut (gold mili gram)") → فقط اولین کلمه را برمی‌داریم.
+ */
+function extractPair(item: Record<string, unknown>): { symbol: string; chartSymbol: string } | null {
+  const firstWord = (v: unknown): string =>
+    typeof v === "string" ? v.trim().split(/[\s(]/)[0] : "";
+  const baseObj = item.base_currency as Record<string, unknown> | undefined;
+  const quoteObj = item.quote_currency as Record<string, unknown> | undefined;
+  const base = firstWord((baseObj?.symbol as Record<string, unknown> | undefined)?.en);
+  const quote = firstWord((quoteObj?.symbol as Record<string, unknown> | undefined)?.en);
+  if (!base || !quote) return null;
+  const symbol = `${base}${quote}`.toUpperCase();
+  const chartCfg = item.trading_chart_settings as Record<string, unknown> | undefined;
+  const chartRaw = typeof chartCfg?.ramzinex === "string" ? chartCfg.ramzinex.trim() : "";
+  return { symbol, chartSymbol: chartRaw || symbol.toLowerCase() };
+}
 
 async function loadPairs(): Promise<PairsCache> {
   if (pairsCache && Date.now() - pairsCache.at < 10 * 60_000) return pairsCache;
@@ -232,18 +276,26 @@ async function loadPairs(): Promise<PairsCache> {
     PRIVATE_V2_BASE,
   );
   const pairs = Array.isArray(payload) ? payload : payload?.pairs ?? [];
+  // قالب واقعی پاسخ را یک‌بار در لاگ سرور می‌گذاریم تا تشخیص نگاشت ممکن باشد
+  if (pairs.length) console.log(`[ramzinex] pairs sample: ${JSON.stringify(pairs[0]).slice(0, 300)}`);
   const byNorm = new Map<string, MarketInfo>();
   const byId = new Map<number, string>();
   for (const item of pairs ?? []) {
     const id = Number(item.id ?? item.pair_id);
-    const symbol = String(item.symbol ?? item.name ?? item.pair ?? "");
-    if (!Number.isInteger(id) || id <= 0 || !symbol) continue;
-    byNorm.set(norm(symbol), { id, symbol });
-    byId.set(id, norm(symbol));
+    const extracted = extractPair(item);
+    const key = extracted ? norm(extracted.symbol) : "";
+    if (!Number.isInteger(id) || id <= 0 || !key || !extracted) continue;
+    byNorm.set(key, { id, symbol: extracted.symbol, chartSymbol: extracted.chartSymbol });
+    byId.set(id, key);
   }
   if (!byNorm.size) throw new RamzinexError("فهرست بازارهای رمزینکس خالی است", 502);
-  pairsCache = { at: Date.now(), byNorm, byId };
+  pairsCache = { at: Date.now(), byNorm, byId, sample: pairs.slice(0, 3) };
   return pairsCache;
+}
+
+/** نمونهٔ خام آیتم‌های pairs — فقط برای تشخیص قالب وقتی نگاشت خراب است */
+export function getPairsSample(): unknown[] {
+  return pairsCache?.sample ?? [];
 }
 
 /** نگاشت کامل نماد نرمال‌شده → شناسه بازار (برای وب‌سوکت سمت کلاینت) */
@@ -297,7 +349,7 @@ export interface RzCandles {
 export async function fetchCandles(symbol: string, minutes: number, fromSec: number, toSec: number): Promise<RzCandles> {
   const market = await resolveMarket(symbol);
   const data = await publicGet<Partial<RzCandles> & { s?: string }>("/chart/tv/history", {
-    symbol: market.symbol,
+    symbol: market.chartSymbol,
     resolution: ramzinexResolution(minutes),
     from: String(Math.floor(fromSec)),
     to: String(Math.floor(toSec)),
@@ -382,7 +434,7 @@ export interface RzOrder {
 
 const STATUS_LABEL: Record<number, string> = { 1: "open", 2: "canceled", 3: "done", 4: "partial" };
 
-function normalizeOrder(item: Record<string, unknown>): RzOrder {
+export function normalizeOrder(item: Record<string, unknown>): RzOrder {
   const pairId = Number(item.pair_id ?? 0);
   const statusId = Number(item.status_id ?? 1);
   return {
@@ -392,7 +444,14 @@ function normalizeOrder(item: Record<string, unknown>): RzOrder {
     side: String(item.type_en ?? item.type ?? "").toLowerCase() === "sell" ? "sell" : "buy",
     price: Number(item.order_price_nr ?? item.order_price ?? 0),
     qty: Number(item.amount_nr ?? item.amount ?? 0),
-    filled: Number(item.filled_nr ?? 0),
+    filled: Number(
+      item.filled_nr ??
+      item.filled_amount_nr ??
+      item.matched_amount_nr ??
+      item.filled ??
+      item.matched_amount ??
+      0,
+    ),
     statusId,
     status: STATUS_LABEL[statusId] ?? "open",
     averagePrice: Number(item.average_price_nr ?? item.average_price ?? 0),
@@ -437,7 +496,7 @@ export async function placeOrder(
 
 /** وضعیت سفارش: GET /users/me/orders2/{order_id} */
 export async function orderStatus(orderId: number): Promise<RzOrder> {
-  const data = await privateRequest<Record<string, unknown>>(`/users/me/orders2/${orderId}`);
+  const data = await privateRequest<Record<string, unknown>>("GET", `/users/me/orders2/${orderId}`);
   return normalizeOrder(data ?? {});
 }
 

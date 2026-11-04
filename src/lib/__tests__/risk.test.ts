@@ -10,7 +10,16 @@ import {
 } from "../risk/risk";
 import type { EquityPoint, Position, Trade } from "../types";
 
-const cfg = { ...DEFAULT_CONFIG };
+// ریاضی سایزبندی با سقف‌های ثابت تست می‌شود تا به پیش‌فرض‌های قابل تنظیم وابسته نباشد.
+const cfg = {
+  ...DEFAULT_CONFIG,
+  riskPerTradePct: 0.5,
+  maxOpenPositions: 3,
+  maxEngagedCapitalPct: 12,
+  maxPortfolioRiskPct: 1.5,
+  drawdownHalvePct: 6,
+  drawdownStopPct: 10,
+};
 
 function mockPosition(overrides: Partial<Position> = {}): Position {
   return {
@@ -43,32 +52,32 @@ describe("drawdownPct و riskState", () => {
     expect(drawdownPct(50, 0)).toBe(0);
   });
 
-  it("در ۸٪ نصف و در ۱۲٪ توقف (پیش‌فرض)", () => {
+  it("در ۶٪ نصف و در ۱۰٪ توقف (تست)", () => {
     expect(riskState(5, cfg)).toBe("normal");
-    expect(riskState(8, cfg)).toBe("halved");
-    expect(riskState(11.9, cfg)).toBe("halved");
-    expect(riskState(12, cfg)).toBe("stopped");
+    expect(riskState(6, cfg)).toBe("halved");
+    expect(riskState(9.9, cfg)).toBe("halved");
+    expect(riskState(10, cfg)).toBe("stopped");
   });
 });
 
 describe("computePositionSize", () => {
   const base = { equity: 100_000_000, peakEquity: 100_000_000, grid: null, openPositions: [], cfg };
 
-  it("ریسک ۱٪ سرمایه با سقف سهم هر پوزیشن محدود می‌شود", () => {
-    // stopDist = 500 → qty خام = 1M/500 = 2000 (notional 2M زیر سقف 3M)
+  it("ریسک ۰.۵٪ سرمایه را از فاصله Stop محاسبه می‌کند", () => {
     const r = computePositionSize({ ...base, entry: 1000, stop: 500 });
     expect(r.allowed).toBe(true);
-    expect(r.riskAmount).toBeCloseTo(1_000_000, 6);
-    expect(r.qty).toBeCloseTo(2000, 6);
-    expect(r.notional).toBeCloseTo(2_000_000, 6);
+    expect(r.riskAmount).toBeCloseTo(500_000, 6);
+    expect(r.qty).toBeCloseTo(1000, 6);
+    expect(r.notional).toBeCloseTo(1_000_000, 6);
   });
 
   it("notional هرگز از سهم Grid/بودجه درگیر بیشتر نمی‌شود", () => {
-    // stopDist کوچک → qty خام بزرگ؛ باید به 3M (= 12% سرمایه / 4 پوزیشن) محدود شود
+    // stopDist کوچک → qty خام بزرگ؛ باید به 4M (= 12% سرمایه / 3 پوزیشن) محدود شود
     const r = computePositionSize({ ...base, entry: 1000, stop: 990 });
     expect(r.allowed).toBe(true);
-    expect(r.notional).toBeCloseTo(3_000_000, 6);
-    expect(r.qty).toBeCloseTo(3000, 6);
+    expect(r.notional).toBeCloseTo(4_000_000, 6);
+    expect(r.qty).toBeCloseTo(4000, 6);
+    expect(r.riskAmount).toBeCloseTo(40_000, 6);
   });
 
   it("stop بالای ورود = ورود نامعتبر", () => {
@@ -76,21 +85,21 @@ describe("computePositionSize", () => {
   });
 
   it("با Drawdown بیش از حد نصف، سایز نصف می‌شود", () => {
-    const equity = 91_000_000; // dd = 9%
+    const equity = 93_000_000; // dd = 7%
     const r = computePositionSize({ ...base, equity, peakEquity: 100_000_000, entry: 1000, stop: 500 });
     expect(r.allowed).toBe(true);
-    expect(r.riskAmount).toBeCloseTo((equity * 0.01) / 2, 6);
+    expect(r.riskAmount).toBeCloseTo((equity * 0.005) / 2, 6);
     expect(r.qty).toBeCloseTo(r.riskAmount / 500, 6);
   });
 
-  it("با Drawdown ۱۲٪ ورود کاملاً متوقف می‌شود", () => {
-    const r = computePositionSize({ ...base, equity: 87_000_000, peakEquity: 100_000_000, entry: 1000, stop: 500 });
+  it("با Drawdown ۱۰٪ ورود کاملاً متوقف می‌شود", () => {
+    const r = computePositionSize({ ...base, equity: 90_000_000, peakEquity: 100_000_000, entry: 1000, stop: 500 });
     expect(r.allowed).toBe(false);
     expect(r.reason).toContain("توقف");
   });
 
-  it("سقف ۴ پوزیشن هم‌زمان رعایت می‌شود", () => {
-    const open = Array.from({ length: 4 }, (_, i) => mockPosition({ id: `p${i}` }));
+  it("سقف ۳ پوزیشن هم‌زمان رعایت می‌شود", () => {
+    const open = Array.from({ length: 3 }, (_, i) => mockPosition({ id: `p${i}` }));
     const r = computePositionSize({ ...base, entry: 1000, stop: 500, openPositions: open });
     expect(r.allowed).toBe(false);
   });
@@ -100,6 +109,13 @@ describe("computePositionSize", () => {
     const r = computePositionSize({ ...base, entry: 1000, stop: 500, openPositions: open });
     expect(r.allowed).toBe(false);
     expect(r.reason).toContain("درگیر");
+  });
+
+  it("ریسک باز کل پورتفو را به ۱.۵٪ محدود می‌کند", () => {
+    const open = [mockPosition({ qty: 15_000, notional: 1_000_000 })];
+    const r = computePositionSize({ ...base, entry: 1000, stop: 500, openPositions: open });
+    expect(r.allowed).toBe(false);
+    expect(r.reason).toContain("ریسک باز");
   });
 });
 
@@ -112,22 +128,26 @@ describe("managePosition", () => {
     expect(r.stopHit!.reason).toBe("stop_loss");
   });
 
+  it("در گپ نزولی، خروج را روی open بدتر از Stop ثبت می‌کند", () => {
+    const r = managePosition(mockPosition(), { open: 850, high: 880, low: 820, close: 840 }, 10, cfg);
+    expect(r.stopHit?.price).toBe(850);
+  });
+
   it("در RR=1.5 حد ضرر به ورود منتقل و Trailing فعال می‌شود", () => {
     const r = managePosition(mockPosition(), { high: 1160, low: 1050, close: 1150 }, 10, cfg);
     expect(r.position).not.toBeNull();
     expect(r.position!.breakEvenDone).toBe(true);
     expect(r.position!.trailingActive).toBe(true);
-    // stop حداقل به ورود رسیده و trailing آن را بالاتر برده: close - 1.2×ATR
-    expect(r.position!.stop).toBeCloseTo(1150 - 12, 6);
+    expect(r.position!.stop).toBeCloseTo(1150 - 15, 6);
   });
 
-  it("در RR=2.5 نیمی از پوزیشن با سود بسته می‌شود", () => {
+  it("در RR=1.5 سی درصد پوزیشن با سود بسته می‌شود", () => {
     const r = managePosition(mockPosition({ qty: 2 }), { high: 1260, low: 1200, close: 1255 }, 10, cfg);
     expect(r.partialClose).not.toBeNull();
-    expect(r.partialClose!.qty).toBeCloseTo(1, 6); // 50%
-    expect(r.partialClose!.price).toBeCloseTo(1250, 6); // entry + 2.5R
-    expect(r.partialClose!.pnl).toBeCloseTo(250, 6);
-    expect(r.position!.qty).toBeCloseTo(1, 6);
+    expect(r.partialClose!.qty).toBeCloseTo(0.6, 6);
+    expect(r.partialClose!.price).toBeCloseTo(1150, 6);
+    expect(r.partialClose!.pnl).toBeCloseTo(90, 6);
+    expect(r.position!.qty).toBeCloseTo(1.4, 6);
     expect(r.position!.partialDone).toBe(true);
   });
 

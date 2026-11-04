@@ -29,6 +29,7 @@ import type { NobitexSocketState, RealtimeMarketUpdate } from "./nobitexWebSocke
 import { RamzinexWebSocket } from "./ramzinexWebSocket";
 import type { MarketSocket, MarketSocketCallbacks } from "./ramzinexWebSocket";
 import { formatDate } from "../format";
+import { notifyTelegram } from "./telegramNotify";
 
 const LEGACY_STORE_KEY = "tradeban.engine.v1";
 const PAPER_STORE_KEY = "tradeban.engine.paper.v2";
@@ -52,6 +53,29 @@ interface RealOrderResult {
   filledQuantity: number;
   averagePrice: number;
   reconciliationRequired: boolean;
+}
+
+/** وضعیت رانر ۲۴/۷ سرور (خروجی /api/bot/status) برای آینه‌سازی در UI */
+interface ServerRunnerStatus {
+  running: boolean;
+  mode: "paper" | "real";
+  realReady: boolean;
+  cash: number;
+  equity: number;
+  peakEquity: number;
+  initialCapital: number;
+  tickCount: number;
+  lastTickAt: number | null;
+  nextTickAt: number | null;
+  lastError: string | null;
+  lastNotes: string[];
+  full: {
+    positions: Position[];
+    trades: Trade[];
+    equityCurve: EquityPoint[];
+    scans: SymbolScan[];
+    lastPrices: Record<string, number>;
+  };
 }
 
 interface NobitexAccount {
@@ -102,6 +126,11 @@ export class BotEngine {
   websocket: NobitexSocketState = { status: "idle", privateEnabled: false, lastMessageAt: null, error: null };
   busy = false;
   notice: string | null = null;
+  /** وقتی رانر ۲۴/۷ سرور فعال است، موتور فقط نتیجه‌های سرور را آینه می‌کند */
+  serverMode = false;
+  serverInfo: { tickCount: number; lastTickAt: number | null; lastError: string | null; lastNotes: string[] } | null = null;
+
+  private serverTimer: ReturnType<typeof setInterval> | null = null;
 
   private lastSignal1h: Record<string, number> = {};
   private lastProcessed15m: Record<string, number> = {};
@@ -148,7 +177,8 @@ export class BotEngine {
 
   private notify(): void {
     this.listeners.forEach((fn) => fn());
-    this.persist();
+    // در حالت آینهٔ سرور، وضعیت سرور هرگز در دفتر محلی persist نمی‌شود
+    if (!this.serverMode) this.persist();
   }
 
   private notifyUi(): void {
@@ -186,6 +216,11 @@ export class BotEngine {
   }
 
   resetPaper(): void {
+    if (this.serverMode) {
+      this.notice = "حساب کاغذی توسط رانر سرور مدیریت می‌شود — برای بازنشانی از کارت «رانر ۲۴/۷ سرور» در تنظیمات استفاده کنید.";
+      this.notifyUi();
+      return;
+    }
     if (this.mode === "real") {
       try {
         localStorage.setItem(PAPER_STORE_KEY, JSON.stringify(this.emptyPortfolio(this.cfg.paperInitialCapital)));
@@ -245,10 +280,21 @@ export class BotEngine {
 
   // ---------- پیکربندی ----------
 
+  /** تنظیمات و لیست پایش فعلی برای رانر ۲۴/۷ سرور ارسال می‌شود تا با همان پیکربندی کاربر کار کند */
+  private async pushServerConfig(): Promise<void> {
+    const response = await fetch("/api/bot/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cfg: this.cfg, symbols: this.symbols }),
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  }
+
   setConfig(cfg: StrategyConfig): void {
     this.cfg = normalizeConfig(cfg);
     saveConfig(this.cfg);
     configureApi(this.cfg);
+    void this.pushServerConfig().catch(() => undefined);
     this.notify();
   }
 
@@ -256,6 +302,7 @@ export class BotEngine {
     this.symbols = symbols;
     saveSymbols(symbols);
     this.socket.setSymbols(symbols);
+    void this.pushServerConfig().catch(() => undefined);
     this.notify();
   }
 
@@ -270,8 +317,38 @@ export class BotEngine {
         this.notify();
         return;
       }
+      if (this.serverMode) {
+        // تغییر دفتر، رانر فعال را سمت سرور متوقف می‌کند. شروع دوباره باید صریح باشد.
+        try {
+          await this.persistMode(mode);
+        } catch (error) {
+          this.notice = `تغییر حالت رانر سرور ناموفق بود: ${(error as Error).message}`;
+          this.notifyUi();
+          return;
+        }
+        this.mode = mode;
+        this.running = false;
+        this.notice = "حالت Real انتخاب شد. برای شروع معامله واقعی ۲۴/۷، رانر سرور را دوباره روشن کنید.";
+        await this.pollServer();
+        this.notifyUi();
+        return;
+      }
       const synced = await this.syncWithExchange();
       if (!synced) return;
+    } else if (this.serverMode) {
+      try {
+        await this.persistMode(mode);
+      } catch (error) {
+        this.notice = `تغییر حالت رانر سرور ناموفق بود: ${(error as Error).message}`;
+        this.notifyUi();
+        return;
+      }
+      this.mode = mode;
+      this.running = false;
+      this.notice = "حالت Paper انتخاب شد. برای شروع پایش ۲۴/۷، رانر سرور را دوباره روشن کنید.";
+      await this.pollServer();
+      this.notifyUi();
+      return;
     }
     this.persist();
     this.mode = mode;
@@ -281,16 +358,20 @@ export class BotEngine {
       this.revalueRealCash();
     }
     this.notify();
-    this.persistMode(mode);
+    await this.persistMode(mode);
   }
 
   /** حالت معامله روی سرور ذخیره می‌شود تا پس از refresh هم حفظ بماند */
-  private persistMode(mode: "paper" | "real"): void {
-    fetch("/api/mode", {
+  private async persistMode(mode: "paper" | "real"): Promise<void> {
+    const response = await fetch("/api/mode", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ mode }),
-    }).catch(() => undefined);
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => null) as { statusMessage?: string; message?: string } | null;
+      throw new Error(body?.statusMessage ?? body?.message ?? `HTTP ${response.status}`);
+    }
   }
 
   /**
@@ -450,25 +531,128 @@ export class BotEngine {
 
   // ---------- زمان‌بندی ----------
 
+  /** اتصال داشبورد به رانر سرور؛ هیچ حلقه معامله‌ای در مرورگر اجرا نمی‌شود. */
+  observeServer(): void {
+    this.enterServerMirror();
+  }
+
+  /** شروع رانر ۲۴/۷ سمت سرور در دفتر انتخاب‌شده (Paper یا Real). */
   start(): void {
-    if (this.running) return;
-    this.running = true;
+    if (this.busy || this.running) return;
+    void this.controlServer(true);
+  }
+
+  private async controlServer(running: boolean): Promise<void> {
+    this.busy = true;
+    try {
+      if (running) await this.pushServerConfig();
+      const response = await fetch("/api/bot/control", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ running, mode: this.mode }),
+      });
+      const data = await response.json().catch(() => null) as (ServerRunnerStatus & { statusMessage?: string; message?: string }) | null;
+      if (!response.ok || !data) {
+        throw new Error(data?.statusMessage ?? data?.message ?? `HTTP ${response.status}`);
+      }
+      this.applyServerStatus(data);
+      this.enterServerMirror();
+      this.notice = running
+        ? `رانر ${this.mode === "real" ? "Real" : "Paper"} روشن شد؛ داشبورد باز هر ۱۰ دقیقه tick می‌فرستد و Cron سرور نیز روزانه ادامه می‌دهد.`
+        : "رانر سرور خاموش شد.";
+    } catch (error) {
+      this.notice = `کنترل رانر سرور ناموفق بود: ${(error as Error).message}`;
+    } finally {
+      this.busy = false;
+      this.notifyUi();
+    }
+  }
+
+  private startLocal(): void {
+    if (!this.running || this.serverMode) return;
     this.socket.start(this.symbols);
     this.scheduleNext();
     this.timer = setInterval(() => {
-      if (this.nextTick && Date.now() >= this.nextTick) void this.tick();
+      if (this.nextTick && Date.now() >= this.nextTick) void this.tickLocal();
     }, 20_000);
     this.notify();
     void this.tick();
   }
 
-  stop(): void {
-    this.running = false;
+  private enterServerMirror(): void {
+    if (this.serverMode && this.serverTimer) {
+      void this.pollServer();
+      return;
+    }
+    this.serverMode = true;
     this.socket.stop();
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
-    this.nextTick = null;
-    this.notify();
+    if (this.serverTimer) clearInterval(this.serverTimer);
+    void this.pollServer();
+    this.serverTimer = setInterval(() => void this.pollServer(), 15_000);
+    this.notifyUi();
+  }
+
+  private async pollServer(): Promise<void> {
+    try {
+      const res = await fetch("/api/bot/status", { cache: "no-store" });
+      if (!res.ok) return;
+      const status = (await res.json()) as ServerRunnerStatus;
+      this.applyServerStatus(status);
+      this.notifyUi();
+
+      // Cron این استقرار Vercel روزانه است. تا وقتی داشبورد باز است، نشست
+      // احرازشدهٔ مرورگر cadence ده‌دقیقه‌ای مورد انتظار را تأمین می‌کند.
+      // قفل tick و محدودیت یک‌دقیقه‌ای سرور از اجرای هم‌زمان جلوگیری می‌کنند.
+      if (
+        status.running &&
+        status.nextTickAt !== null &&
+        Date.now() >= status.nextTickAt &&
+        !this.busy
+      ) {
+        void this.tick();
+      }
+    } catch {
+      /* خطای موقت شبکه — poll بعدی تلاش می‌کند */
+    }
+  }
+
+  /** نمادهای رانر سرور با قالب صرافی فعال‌اند (BTCIRR در رمزینکس)؛ قرارداد UI لیست پایش است (IRT) */
+  private uiSymbol(symbol: string): string {
+    return symbol.replace(/IRR$/, "IRT");
+  }
+
+  /** نگاشت خروجی /api/bot/status به فیلدهای موتور تا همهٔ صفحات UI بدون تغییر کار کنند */
+  private applyServerStatus(s: ServerRunnerStatus): void {
+    // حالت واقعی/کاغذی را سرور تعیین می‌کند (گیت ENABLE-REAL-TRADING سمت سرور است)
+    this.mode = s.mode;
+    this.running = s.running;
+    this.cash = s.cash;
+    this.peakEquity = s.peakEquity;
+    this.positions = s.full.positions.map((p) => ({ ...p, symbol: this.uiSymbol(p.symbol) }));
+    this.trades = s.full.trades.map((t) => ({ ...t, symbol: this.uiSymbol(t.symbol) }));
+    this.equity = s.full.equityCurve;
+    const scans: Record<string, SymbolScan> = {};
+    for (const scan of s.full.scans) {
+      const symbol = this.uiSymbol(scan.symbol);
+      scans[symbol] = { ...scan, symbol };
+    }
+    this.scans = scans;
+    this.lastTick = s.lastTickAt;
+    this.nextTick = s.nextTickAt;
+    this.serverInfo = {
+      tickCount: s.tickCount,
+      lastTickAt: s.lastTickAt,
+      lastError: s.lastError,
+      lastNotes: s.lastNotes,
+    };
+  }
+
+  /** توقف نیز به سرور ارسال می‌شود؛ داشبورد برای مشاهده وضعیت متصل می‌ماند. */
+  stop(): void {
+    if (this.busy || !this.running) return;
+    void this.controlServer(false);
   }
 
   private scheduleNext(): void {
@@ -480,8 +664,27 @@ export class BotEngine {
 
   // ---------- حلقه اصلی ----------
 
+  /** اجرای فوری یک tick روی سرور؛ مرورگر فقط درخواست کنترل می‌فرستد و نتیجه را نمایش می‌دهد. */
   async tick(): Promise<void> {
     if (this.busy) return;
+    this.busy = true;
+    try {
+      const response = await fetch("/api/cron/tick", { cache: "no-store" });
+      const body = await response.json().catch(() => null) as { skipped?: string; statusMessage?: string; message?: string } | null;
+      if (!response.ok) throw new Error(body?.statusMessage ?? body?.message ?? `HTTP ${response.status}`);
+      if (body?.skipped === "stopped") this.notice = "رانر سرور خاموش است؛ ابتدا آن را روشن کنید.";
+      await this.pollServer();
+    } catch (error) {
+      this.notice = `tick سرور ناموفق بود: ${(error as Error).message}`;
+    } finally {
+      this.busy = false;
+      this.notifyUi();
+    }
+  }
+
+  /** موتور قدیمی مرورگر فقط برای سازگاری کد نگه داشته شده و از UI فراخوانی نمی‌شود. */
+  private async tickLocal(): Promise<void> {
+    if (this.busy || this.serverMode) return;
     this.busy = true;
     try {
       const now = Date.now();
@@ -514,7 +717,25 @@ export class BotEngine {
           let signal: EntrySignal | null = null;
           if (this.lastSignal1h[symbol] !== lastHour) {
             signal = evaluateEntry({ symbol, candles4h, candles1h, candles15m, cfg: this.cfg });
-            if (signal) this.lastSignal1h[symbol] = lastHour;
+            if (signal) {
+              this.lastSignal1h[symbol] = lastHour;
+              notifyTelegram({
+                kind: "signal",
+                data: {
+                  symbol,
+                  score: signal.score,
+                  qualified: signal.qualified,
+                  entry: signal.entry,
+                  stop: signal.stop,
+                  target: signal.target,
+                  rr: signal.rr,
+                  pattern: signal.pattern ? (PATTERN_LABELS[signal.pattern] ?? String(signal.pattern)) : null,
+                  volumeRatio: signal.volumeRatio,
+                  time: signal.time,
+                  mode: this.mode,
+                },
+              });
+            }
             if (signal?.qualified) await this.tryOpen(symbol, signal);
           }
 
@@ -549,10 +770,53 @@ export class BotEngine {
       this.lastTick = Date.now();
       this.scheduleNext();
       this.markEquity();
+      this.maybeSendDigest();
     } finally {
       this.busy = false;
       this.notify();
     }
+  }
+
+  private lastDigestAt = 0;
+
+  /** گزارش دوره‌ای: پوزیشن‌های باز + فرصت‌های فعال — حداکثر هر ۴ ساعت یک‌بار */
+  private maybeSendDigest(): void {
+    if (!this.positions.length) return;
+    const now = Date.now();
+    if (now - this.lastDigestAt < 4 * 3_600_000) return;
+    this.lastDigestAt = now;
+    const eq = this.currentEquity();
+    notifyTelegram({
+      kind: "digest",
+      data: {
+        positions: this.positions.map((p) => {
+          const price = this.scans[p.symbol]?.lastPrice ?? p.entry;
+          return {
+            symbol: p.symbol,
+            qty: p.qty,
+            entry: p.entry,
+            price,
+            pnlPct: p.entry > 0 ? ((price - p.entry) / p.entry) * 100 : 0,
+            stop: p.stop,
+            target: p.target,
+            mode: p.mode,
+          };
+        }),
+        opportunities: Object.values(this.scans)
+          .filter((s) => s.signal)
+          .sort((a, b) => (b.signal?.score ?? 0) - (a.signal?.score ?? 0))
+          .slice(0, 5)
+          .map((s) => ({
+            symbol: s.symbol,
+            score: s.signal?.score ?? 0,
+            qualified: s.signal?.qualified ?? false,
+            price: s.lastPrice,
+          })),
+        equity: eq,
+        riskState: riskState(drawdownPct(eq, this.peakEquity), this.cfg),
+        time: now,
+      },
+    });
   }
 
   private emptyScan(symbol: string, note: string): SymbolScan {
@@ -624,7 +888,7 @@ export class BotEngine {
     this.lastProcessed15m[symbol] = candles15m[candles15m.length - 1].time;
 
     const structure4h = analyzeStructure(candles4h, this.cfg.swingLookback);
-    const chochDown = hasRecentBearishChoch(structure4h, this.cfg.exitChochBars);
+    const chochDown = hasRecentBearishChoch(structure4h, candles4h.length - 1, this.cfg.exitChochBars);
 
     for (const candle of fresh) {
       const current = this.positions.find((p) => p.id === position.id);
@@ -845,6 +1109,21 @@ export class BotEngine {
     this.trades.push(trade);
     this.positions = this.positions.filter((x) => x.id !== p.id);
     this.markEquity(time);
+    notifyTelegram({
+      kind: "close",
+      data: {
+        symbol: trade.symbol,
+        qty: trade.qty,
+        entry: trade.entry,
+        exit: trade.exit,
+        pnl: trade.pnl,
+        pnlPct: trade.pnlPct,
+        exitReason: EXIT_REASON_LABELS[trade.exitReason] ?? trade.exitReason,
+        mode: trade.mode,
+        holdMs: trade.holdMs,
+        time: trade.closedAt,
+      },
+    });
     return true;
   }
 
@@ -925,9 +1204,28 @@ export class BotEngine {
     this.positions.push(position);
     this.lastProcessed15m[symbol] = signal.time;
     this.markEquity();
+    notifyTelegram({
+      kind: "open",
+      data: {
+        symbol,
+        qty,
+        entry: fill,
+        stop: signal.stop,
+        target: signal.target,
+        rr: signal.rr,
+        score: signal.score,
+        mode: this.mode,
+        time: Date.now(),
+      },
+    });
   }
 
   closePositionManually(id: string): void {
+    if (this.serverMode) {
+      this.notice = "پوزیشن‌ها توسط رانر ۲۴/۷ سرور مدیریت می‌شوند؛ برای کنترل دستی، رانر را از تنظیمات خاموش کنید.";
+      this.notifyUi();
+      return;
+    }
     const p = this.positions.find((x) => x.id === id);
     if (!p) return;
     const scan = this.scans[p.symbol];

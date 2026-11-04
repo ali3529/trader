@@ -34,7 +34,13 @@ export interface MarketStructure {
 
 export interface Level {
   price: number;
+  /** کران پایین ناحیه قیمتی؛ برای سطح خطی با price برابر است */
+  lower?: number;
+  /** کران بالای ناحیه قیمتی؛ برای سطح خطی با price برابر است */
+  upper?: number;
   kind: "support" | "resistance" | "order_block" | "fvg";
+  /** جهت ناحیه: demand برای ورود خرید، supply برای مانع/خروج */
+  side?: "demand" | "supply";
   strength: number;
   time: number;
 }

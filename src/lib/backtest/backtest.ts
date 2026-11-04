@@ -1,6 +1,6 @@
 import type { StrategyConfig } from "../config";
 import type { BacktestResult, Candle, Position, Trade, EquityPoint } from "../types";
-import { aggregateCandles, lastAtr } from "../strategy/indicators";
+import { aggregateCandles, isCompleteAlignedBucket, lastAtr } from "../strategy/indicators";
 import { analyzeStructure, hasRecentBearishChoch } from "../strategy/structure";
 import { detectBearishPatterns } from "../strategy/patterns";
 import { allLevels, nearestExitLevel } from "../strategy/levels";
@@ -16,6 +16,10 @@ export interface BacktestOptions {
   slippagePct?: number;
 }
 
+const FIFTEEN_MINUTES_MS = 15 * 60 * 1000;
+const ONE_HOUR_MS = 60 * 60 * 1000;
+const FOUR_HOURS_MS = 4 * ONE_HOUR_MS;
+
 /**
  * بک‌تست رویدادی بدون Look-ahead Bias:
  * - در هر لحظه فقط از کندل‌های بسته‌شده استفاده می‌شود (تجمیع تدریجی 15m→1h→4h)
@@ -23,7 +27,13 @@ export interface BacktestOptions {
  * - کارمزد، لغزش، خروج جزئی، Break Even، Trailing و Stop شبیه‌سازی می‌شوند
  */
 export function runBacktest(opts: BacktestOptions): BacktestResult {
-  const { symbol, candles15m, cfg } = opts;
+  const { symbol, cfg } = opts;
+  // برخی ارائه‌دهندگان timestamp را چند ثانیه کنار مرز رسمی می‌فرستند.
+  // گردکردن به نزدیک‌ترین مرز ۱۵ دقیقه، مرزبندی را اصلاح می‌کند و شکاف‌ها را حفظ می‌کند.
+  const candles15m = opts.candles15m.map((candle) => ({
+    ...candle,
+    time: Math.round(candle.time / FIFTEEN_MINUTES_MS) * FIFTEEN_MINUTES_MS,
+  }));
   const initialCapital = opts.initialCapital ?? cfg.paperInitialCapital;
   const feePct = (opts.feePct ?? cfg.feePct) / 100;
   const slipPct = (opts.slippagePct ?? cfg.slippagePct) / 100;
@@ -82,14 +92,20 @@ export function runBacktest(opts: BacktestOptions): BacktestResult {
   let i = 0;
   for (; i < candles15m.length; i++) {
     const bar = candles15m[i];
+    let isNewHour = false;
+    let isNewFourHour = false;
 
-    // تجمیع تدریجی: هر ۴ کندل ۱۵ دقیقه یک کندل ۱ ساعته بسته‌شده
-    if ((i + 1) % 4 === 0) {
+    // تجمیع بر مرزهای واقعی UTC؛ شروع ناقص یا شکاف داده، کندل مصنوعی نمی‌سازد.
+    if ((bar.time + FIFTEEN_MINUTES_MS) % ONE_HOUR_MS === 0 && i >= 3) {
       const chunk = candles15m.slice(i - 3, i + 1);
-      bars1h.push(aggregateCandles(chunk, 4)[0]);
-      // هر ۴ کندل ۱ ساعته یک کندل ۴ ساعته بسته‌شده
-      if (bars1h.length % 4 === 0) {
-        bars4h.push(aggregateCandles(bars1h.slice(-4), 4)[0]);
+      if (isCompleteAlignedBucket(chunk, ONE_HOUR_MS, FIFTEEN_MINUTES_MS)) {
+        bars1h.push(aggregateCandles(chunk, 4)[0]);
+        isNewHour = true;
+        const hours = bars1h.slice(-4);
+        if (isCompleteAlignedBucket(hours, FOUR_HOURS_MS, ONE_HOUR_MS)) {
+          bars4h.push(aggregateCandles(hours, 4)[0]);
+          isNewFourHour = true;
+        }
       }
     }
 
@@ -122,15 +138,14 @@ export function runBacktest(opts: BacktestOptions): BacktestResult {
     }
 
     // خروج با CHoCH نزولی ۴ ساعته (فقط روی کندل بسته‌شده)
-    if (position && bars4h.length >= 20 && (i + 1) % 16 === 0) {
+    if (position && bars4h.length >= 20 && isNewFourHour) {
       const structure = analyzeStructure(bars4h, cfg.swingLookback);
-      if (hasRecentBearishChoch(structure, cfg.exitChochBars)) {
+      if (hasRecentBearishChoch(structure, bars4h.length - 1, cfg.exitChochBars)) {
         closeTrade(position, bar.close, "choch_down", bar.time);
       }
     }
 
     // ارزیابی سیگنال فقط روی کندل ۱ ساعته تازه بسته‌شده
-    const isNewHour = (i + 1) % 4 === 0;
     if (isNewHour && bars1h.length >= 60 && bars4h.length >= 40 && !position) {
       const slice15 = candles15m.slice(Math.max(0, i - 159), i + 1);
       const signal = evaluateEntry({ symbol, candles4h: bars4h, candles1h: bars1h, candles15m: slice15, cfg });

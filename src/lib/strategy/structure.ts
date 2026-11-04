@@ -77,17 +77,17 @@ function classifyLowBreak(l: SwingPoint, trend: string): StructureEvent | null {
 }
 
 /** آیا ساختار ۴ ساعته برای ورود خرید معتبر است؟ */
-export function isBullishStructure(m: MarketStructure): boolean {
+export function isBullishStructure(m: MarketStructure, latestIndex?: number, withinBars = 8): boolean {
   if (m.trend !== "up") return false;
-  return m.lastEvent === "BOS_UP" || m.lastEvent === "CHOCH_UP";
+  const last = m.events[m.events.length - 1];
+  if (!last || (last.type !== "BOS_UP" && last.type !== "CHOCH_UP")) return false;
+  return latestIndex === undefined || latestIndex - last.index <= withinBars;
 }
 
 /** CHoCH نزولی اخیر (برای خروج اضطراری) */
-export function hasRecentBearishChoch(m: MarketStructure, withinBars = 6): boolean {
-  const idx = m.events.map((e) => e);
-  const last = idx[idx.length - 1];
+export function hasRecentBearishChoch(m: MarketStructure, latestIndex: number, withinBars = 6): boolean {
+  const last = m.events[m.events.length - 1];
   if (!last) return false;
   if (last.type !== "CHOCH_DOWN") return false;
-  const lastSwingIndex = m.swings.length ? m.swings[m.swings.length - 1].index : last.index;
-  return lastSwingIndex - last.index <= withinBars;
+  return latestIndex - last.index <= withinBars;
 }

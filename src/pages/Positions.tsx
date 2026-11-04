@@ -11,6 +11,7 @@ export default function Positions() {
   const positions = useEngineState((e) => e.positions.slice());
   const scans = useEngineState((e) => ({ ...e.scans }));
   const mode = useEngineState((e) => e.mode);
+  const serverMode = useEngineState((e) => e.serverMode);
   const exchangeOrders = useEngineState((e) => (e.account?.openOrders ?? []).slice()) as Array<Record<string, unknown>>;
 
   return (
@@ -28,7 +29,7 @@ export default function Positions() {
             <Wallet className="h-10 w-10 text-muted-foreground/50" />
             <p className="text-sm text-muted-foreground">پوزیشن بازی وجود ندارد.</p>
             <p className="max-w-md text-xs text-muted-foreground">
-              ربات به‌طور خودکار پس از تأیید ساختار ۴ ساعته، الگوی ورود ۱ ساعته، فیلتر مومنتوم ۱۵ دقیقه و حداقل ۶ تأیید از ۸ معیار وارد معامله می‌شود.
+              ربات پس از تأیید ساختار تازه ۴ ساعته، ناحیه ورود، شکست ۱۵ دقیقه، فضای کافی تا هدف و حداقل {engine.cfg.minConfirmations.toLocaleString("fa-IR")} تأیید از ۸ معیار وارد معامله می‌شود.
             </p>
           </CardContent>
         </Card>
@@ -96,9 +97,11 @@ export default function Positions() {
                   size="sm"
                   variant="destructive"
                   className="w-full rounded-full text-xs"
+                  disabled={serverMode}
                   onClick={() => engine.closePositionManually(p.id)}
+                  title={serverMode ? "این صفحه فقط وضعیت رانر سرور را نمایش می‌دهد" : undefined}
                 >
-                  بستن دستی پوزیشن
+                  {serverMode ? "مدیریت خودکار توسط سرور" : "بستن دستی پوزیشن"}
                 </Button>
               </CardContent>
             </Card>

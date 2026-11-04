@@ -1,6 +1,6 @@
 import { defineHandler } from "nitro";
 import { assertSensitiveRequest } from "../../../utils/requestSecurity";
-import { loadAiConfig, listOllamaModels, listQwenCloudModels } from "../../../utils/ollama";
+import { loadAiConfig, listOllamaModels, hasJevToken, getJevClient } from "../../../utils/jev";
 
 export default defineHandler(async (event) => {
   assertSensitiveRequest(event);
@@ -31,21 +31,31 @@ export default defineHandler(async (event) => {
         installedModels: models,
       };
     }
-    const models = await listQwenCloudModels(config);
-    const ready = models.length === 0 || models.includes(config.qwenModel);
+    // بررسی سلامت Jev: توکن موجود باشد و بتوان کلاینت ساخت
+    if (!hasJevToken(config.jevToken)) {
+      return {
+        provider: "jev",
+        reachable: false,
+        ready: false,
+        model: config.jevModel,
+        installedModels: [],
+        error: "توکن Jev ذخیره نشده است",
+      };
+    }
+    getJevClient(config);
     return {
-      provider: "qwen-cloud",
+      provider: "jev",
       reachable: true,
-      ready,
-      model: config.qwenModel,
-      installedModels: models,
+      ready: true,
+      model: config.jevModel,
+      installedModels: [],
     };
   } catch (error) {
     return {
       provider: config.provider,
       reachable: false,
       ready: false,
-      model: config.provider === "ollama" ? config.ollamaModel : config.qwenModel,
+      model: config.provider === "ollama" ? config.ollamaModel : config.jevModel,
       installedModels: [],
       error: (error as Error).message,
     };
