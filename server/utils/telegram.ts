@@ -119,6 +119,46 @@ export async function fetchTelegramChatIds(): Promise<Array<{ id: number; title:
 
 /* --------------------------------- قالب پیام‌ها --------------------------------- */
 
+const LINE = "━━━━━━━━━━━━━━━";
+
+const PATTERN_FA: Record<string, string> = {
+  bullish_engulfing: "پوشای صعودی",
+  bullish_pinbar: "پین‌بار صعودی",
+  hammer: "چکش",
+  morning_star: "ستاره صبحگاهی",
+  bearish_engulfing: "پوشای نزولی",
+  bearish_pinbar: "پین‌بار نزولی",
+};
+
+/** BTCIRT / BTCIRR → BTC */
+const baseAsset = (symbol: string): string => symbol.replace(/(IRT|IRR|USDT)$/i, "") || symbol;
+
+/** هشتگ قابل جست‌وجو در تلگرام برای هر نماد */
+const tag = (symbol: string): string => `#${esc(baseAsset(symbol))}`;
+
+const modeBadge = (mode: string): string => (/^real/i.test(mode) ? "🔴 واقعی" : "🧪 کاغذی");
+
+const signed = (value: number, digits = 2): string =>
+  `${value > 0 ? "+" : value < 0 ? "−" : ""}${faNum(Math.abs(value), digits)}`;
+
+const pctFrom = (from: number, to: number): number => (from > 0 ? ((to - from) / from) * 100 : 0);
+
+/** نوار امتیاز ۸ معیاره: ●●●●●●○○ */
+const scoreBar = (score: number, total = 8): string => {
+  const filled = Math.max(0, Math.min(total, Math.round(score)));
+  return "●".repeat(filled) + "○".repeat(total - filled);
+};
+
+/** نوار پیشرفت قیمت بین حد ضرر و هدف: 🛑▱▱▰▱▱▱🎯 */
+const progressBar = (stop: number, target: number, price: number, cells = 8): string => {
+  if (!(target > stop)) return "";
+  const ratio = Math.max(0, Math.min(1, (price - stop) / (target - stop)));
+  const at = Math.min(cells - 1, Math.round(ratio * (cells - 1)));
+  return `🛑${Array.from({ length: cells }, (_, i) => (i === at ? "◆" : "▱")).join("")}🎯`;
+};
+
+const pnlEmoji = (pct: number): string => (pct >= 3 ? "🚀" : pct > 0 ? "🟢" : pct === 0 ? "⚪️" : pct > -2 ? "🟠" : "🔴");
+
 export interface SignalPayload {
   symbol: string;
   score: number;
@@ -134,14 +174,24 @@ export interface SignalPayload {
 }
 
 export function formatSignal(p: SignalPayload): string {
+  const head = p.qualified
+    ? `🟢 <b>سیگنال خرید</b> · ${tag(p.symbol)}`
+    : `👀 <b>نزدیک به ورود</b> · ${tag(p.symbol)}`;
+  const pattern = p.pattern ? PATTERN_FA[p.pattern] ?? p.pattern : null;
   return [
-    p.qualified ? `🟢 <b>فرصت واجد شرایط — ${esc(p.symbol)}</b>` : `👀 <b>سیگنال تحت نظر — ${esc(p.symbol)}</b>`,
-    `امتیاز: <b>${faNum(p.score)} از ۸</b>${p.pattern ? ` | الگو: ${esc(p.pattern)}` : ""}`,
-    `ورود: ${faPrice(p.entry)} تومان`,
-    `حد ضرر: ${faPrice(p.stop)} | هدف: ${faPrice(p.target)}`,
-    `R/R: ${faNum(p.rr, 2)} | حجم نسبی: ${faNum(p.volumeRatio, 1)}×`,
-    `کندل سیگنال: ${faTime(p.time)} | حالت: ${esc(p.mode)}`,
-  ].join("\n");
+    head,
+    LINE,
+    `<b>${esc(baseAsset(p.symbol))}</b> · ${modeBadge(p.mode)}`,
+    `امتیاز  <code>${scoreBar(p.score)}</code>  <b>${faNum(p.score)}/۸</b>`,
+    pattern ? `🕯 الگو: ${esc(pattern)}` : null,
+    "",
+    `<blockquote>💰 ورود:  <b>${faPrice(p.entry)}</b>`,
+    `🎯 هدف:  ${faPrice(p.target)}  <i>(${signed(pctFrom(p.entry, p.target))}٪)</i>`,
+    `🛑 حد ضرر:  ${faPrice(p.stop)}  <i>(${signed(pctFrom(p.entry, p.stop))}٪)</i></blockquote>`,
+    `⚖️ R/R <b>${faNum(p.rr, 2)}</b>  ·  📊 حجم <b>${faNum(p.volumeRatio, 1)}×</b>`,
+    LINE,
+    `🕒 ${faTime(p.time)}`,
+  ].filter((line) => line !== null).join("\n");
 }
 
 export interface OpenPayload {
@@ -157,11 +207,20 @@ export interface OpenPayload {
 }
 
 export function formatOpen(p: OpenPayload): string {
+  const notional = p.qty * p.entry;
+  const risk = Math.max(0, p.entry - p.stop) * p.qty;
   return [
-    `📈 <b>پوزیشن باز شد — ${esc(p.symbol)}</b> (${esc(p.mode === "real" ? "واقعی" : "کاغذی")})`,
-    `خرید ${faNum(p.qty, 6)} واحد @ ${faPrice(p.entry)} تومان`,
-    `حد ضرر: ${faPrice(p.stop)} | هدف: ${faPrice(p.target)} | R/R: ${faNum(p.rr, 2)}`,
-    `امتیاز سیگنال: ${faNum(p.score)} از ۸ | ${faTime(p.time)}`,
+    `🚀 <b>پوزیشن باز شد</b> · ${tag(p.symbol)}`,
+    LINE,
+    `<b>${esc(baseAsset(p.symbol))}</b> · ${modeBadge(p.mode)} · امتیاز ${faNum(p.score)}/۸`,
+    "",
+    `<blockquote>💰 خرید:  <b>${faPrice(p.entry)}</b>`,
+    `📦 مقدار:  ${faNum(p.qty, 6)}  <i>(≈ ${faNum(notional)} تومان)</i>`,
+    `🎯 هدف:  ${faPrice(p.target)}  <i>(${signed(pctFrom(p.entry, p.target))}٪)</i>`,
+    `🛑 حد ضرر:  ${faPrice(p.stop)}  <i>(${signed(pctFrom(p.entry, p.stop))}٪)</i></blockquote>`,
+    `⚖️ R/R <b>${faNum(p.rr, 2)}</b>  ·  🔥 ریسک ${faNum(risk)} تومان`,
+    LINE,
+    `🕒 ${faTime(p.time)}`,
   ].join("\n");
 }
 
@@ -179,13 +238,26 @@ export interface ClosePayload {
 }
 
 export function formatClose(p: ClosePayload): string {
-  const win = p.pnl >= 0;
+  const win = p.pnl > 0;
+  const head = win
+    ? `✅ <b>بسته شد با سود</b> · ${tag(p.symbol)}`
+    : p.pnl === 0
+      ? `⚪️ <b>بسته شد سربه‌سر</b> · ${tag(p.symbol)}`
+      : `🛑 <b>بسته شد با زیان</b> · ${tag(p.symbol)}`;
   return [
-    `${win ? "✅" : "🛑"} <b>پوزیشن بسته شد — ${esc(p.symbol)}</b> (${esc(p.mode === "real" ? "واقعی" : "کاغذی")})`,
-    `دلیل خروج: ${esc(p.exitReason)}`,
-    `سود/زیان: <b>${win ? "+" : ""}${faNum(p.pnl)} تومان</b> (${win ? "+" : ""}${faNum(p.pnlPct, 2)}٪)`,
-    `ورود ${faPrice(p.entry)} → خروج ${faPrice(p.exit)} | مقدار ${faNum(p.qty, 6)}`,
-    `مدت: ${faDuration(p.holdMs)} | ${faTime(p.time)}`,
+    head,
+    LINE,
+    `<b>${esc(baseAsset(p.symbol))}</b> · ${modeBadge(p.mode)}`,
+    "",
+    `${pnlEmoji(p.pnlPct)} <b>${signed(p.pnlPct)}٪</b>  ·  <b>${signed(p.pnl, 0)} تومان</b>`,
+    "",
+    `<blockquote>📥 ورود:  ${faPrice(p.entry)}`,
+    `📤 خروج:  ${faPrice(p.exit)}`,
+    `📦 مقدار:  ${faNum(p.qty, 6)}`,
+    `🏷 دلیل:  ${esc(p.exitReason)}</blockquote>`,
+    `⏱ مدت نگهداری: ${faDuration(p.holdMs)}`,
+    LINE,
+    `🕒 ${faTime(p.time)}`,
   ].join("\n");
 }
 
@@ -209,24 +281,41 @@ export interface DigestPayload {
 }
 
 export function formatDigest(p: DigestPayload): string {
-  const lines = [`📊 <b>گزارش تریدبان</b> — ${faTime(p.time)}`];
-  lines.push(`ارزش حساب: ${faNum(p.equity)} تومان | وضعیت ریسک: ${esc(p.riskState)}`);
+  const riskIcon = p.riskState === "عادی" ? "🟢" : p.riskState === "توقف ورود" ? "⛔️" : "🟠";
+  const lines: string[] = [
+    `📊 <b>گزارش تریدبان</b>`,
+    LINE,
+    `💼 ارزش حساب: <b>${faNum(p.equity)}</b> تومان`,
+    `${riskIcon} وضعیت ریسک: ${esc(p.riskState)}`,
+  ];
+
+  lines.push("", `<b>📂 پوزیشن‌های باز (${faNum(p.positions.length)})</b>`);
   if (p.positions.length) {
-    lines.push("", "<b>پوزیشن‌های باز:</b>");
     for (const pos of p.positions) {
       lines.push(
-        `• ${esc(pos.symbol)} (${esc(pos.mode === "real" ? "واقعی" : "کاغذی")}): ${faNum(pos.qty, 6)} واحد @ ${faPrice(pos.entry)} | فعلی ${faPrice(pos.price)} | <b>${pos.pnlPct >= 0 ? "+" : ""}${faNum(pos.pnlPct, 2)}٪</b> | SL ${faPrice(pos.stop)} / TP ${faPrice(pos.target)}`,
+        `<blockquote>${pnlEmoji(pos.pnlPct)} <b>${esc(baseAsset(pos.symbol))}</b>  <b>${signed(pos.pnlPct)}٪</b>  ${/^real/i.test(pos.mode) ? "🔴" : "🧪"}`,
+        `ورود ${faPrice(pos.entry)}  ·  الان ${faPrice(pos.price)}`,
+        `${progressBar(pos.stop, pos.target, pos.price)}</blockquote>`,
       );
     }
   } else {
-    lines.push("", "پوزیشن بازی وجود ندارد.");
+    lines.push("<i>فعلاً پوزیشن بازی نیست.</i>");
   }
+
   const opps = p.opportunities.slice(0, 5);
   if (opps.length) {
-    lines.push("", "<b>فرصت‌های فعال:</b>");
+    lines.push("", "<b>🔭 فرصت‌های زیر نظر</b>");
     for (const opp of opps) {
-      lines.push(`• ${esc(opp.symbol)}: امتیاز ${faNum(opp.score)} از ۸ ${opp.qualified ? "✅ واجد شرایط" : "👀 تحت نظر"} | قیمت ${faPrice(opp.price)}`);
+      lines.push(
+        `${opp.qualified ? "🟢" : "👀"} <b>${esc(baseAsset(opp.symbol))}</b>  <code>${scoreBar(opp.score)}</code> ${faNum(opp.score)}/۸`,
+      );
     }
   }
+  lines.push(LINE, `🕒 ${faTime(p.time)}`);
   return lines.join("\n");
+}
+
+/** هشدار یکدست برای خطاهای ربات و سفارش‌ها */
+export function formatAlert(title: string, body: string): string {
+  return [`⚠️ <b>${esc(title)}</b>`, LINE, `<blockquote>${esc(body)}</blockquote>`].join("\n");
 }
