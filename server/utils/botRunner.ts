@@ -9,6 +9,7 @@ import {
   formatClose,
   formatDigest,
   formatOpen,
+  formatAlert,
   formatSignal,
   loadTelegramConfig,
   sendTelegram,
@@ -84,9 +85,6 @@ const EXIT_LABEL: Record<Trade["exitReason"], string> = {
 };
 
 const RISK_FA: Record<string, string> = { normal: "عادی", halved: "نصف‌شده", stopped: "توقف ورود" };
-
-const esc = (value: unknown): string =>
-  String(value ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
 function freshState(cfg: StrategyConfig): RunnerState {
   return {
@@ -247,7 +245,7 @@ async function placeRealOrder(
     if (res.reconciliationRequired || res.filledQuantity <= 0 || res.averagePrice <= 0) {
       notes.push(`${input.symbol}: سفارش واقعی (${input.reason}) قطعی نشد — دفتر تغییر نکرد`);
       await sendTelegram(
-        `⚠️ <b>سفارش واقعی ${esc(input.symbol)} مبهم ماند</b>\n${esc(input.reason)} — وضعیت: ${esc(res.orderStatus)}؛ همگام‌سازی دستی لازم است.`,
+        formatAlert(`سفارش واقعی ${input.symbol} مبهم ماند`, `${input.reason} — وضعیت: ${res.orderStatus}؛ همگام‌سازی دستی لازم است.`),
       ).catch(() => undefined);
       return null;
     }
@@ -257,7 +255,7 @@ async function placeRealOrder(
     const message = e.statusMessage ?? e.message;
     notes.push(`${input.symbol}: سفارش واقعی رد شد — ${message}`);
     await sendTelegram(
-      `⚠️ <b>رد سفارش واقعی ${esc(input.symbol)}</b>\n${esc(input.reason)}: ${esc(message)}`,
+      formatAlert(`رد سفارش واقعی ${input.symbol}`, `${input.reason}: ${message}`),
     ).catch(() => undefined);
     return null;
   }
@@ -641,7 +639,9 @@ async function manageSymbol(
   }
   if (!signal) return;
 
-  await notify(
+  // فقط سیگنال‌های واجد شرایط یا یک قدم مانده به ورود به تلگرام می‌روند (بدون اسپم ساعتی).
+  const nearEntry = signal.score >= cfg.minConfirmations - 1;
+  if (signal.qualified || nearEntry) await notify(
     "signals",
     formatSignal({
       symbol,
@@ -919,7 +919,7 @@ export async function runnerTick(): Promise<TickResult> {
     state.lastError = message;
     notes.push(`خطای سراسری: ${message}`);
     if (isNewError) {
-      await sendTelegram(`⚠️ <b>خطای ربات سرور تریدبان</b>\n${esc(message)}`).catch(() => undefined);
+      await sendTelegram(formatAlert("خطای ربات سرور تریدبان", message)).catch(() => undefined);
     }
     return { ok: false, batch: [], notes, ms: Date.now() - started };
   } finally {
