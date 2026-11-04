@@ -83,7 +83,7 @@ const GROUPS: { title: string; fields: FieldDef[] }[] = [
         key: "riskPerTradePct",
         label: "ریسک هر معامله (٪)",
         step: 0.1,
-        hint: "پیش‌فرض محافظه‌کارانه ۰.۵٪",
+        hint: "پیش‌فرض تهاجمی ۱٪ (حداکثر ۳٪)",
       },
       { key: "maxOpenPositions", label: "حداکثر پوزیشن هم‌زمان", step: 1 },
       {

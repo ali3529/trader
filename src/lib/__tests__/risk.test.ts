@@ -10,7 +10,16 @@ import {
 } from "../risk/risk";
 import type { EquityPoint, Position, Trade } from "../types";
 
-const cfg = { ...DEFAULT_CONFIG };
+// ریاضی سایزبندی با سقف‌های ثابت تست می‌شود تا به پیش‌فرض‌های قابل تنظیم وابسته نباشد.
+const cfg = {
+  ...DEFAULT_CONFIG,
+  riskPerTradePct: 0.5,
+  maxOpenPositions: 3,
+  maxEngagedCapitalPct: 12,
+  maxPortfolioRiskPct: 1.5,
+  drawdownHalvePct: 6,
+  drawdownStopPct: 10,
+};
 
 function mockPosition(overrides: Partial<Position> = {}): Position {
   return {
@@ -43,7 +52,7 @@ describe("drawdownPct و riskState", () => {
     expect(drawdownPct(50, 0)).toBe(0);
   });
 
-  it("در ۶٪ نصف و در ۱۰٪ توقف (پیش‌فرض)", () => {
+  it("در ۶٪ نصف و در ۱۰٪ توقف (تست)", () => {
     expect(riskState(5, cfg)).toBe("normal");
     expect(riskState(6, cfg)).toBe("halved");
     expect(riskState(9.9, cfg)).toBe("halved");

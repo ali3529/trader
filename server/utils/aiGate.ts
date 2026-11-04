@@ -6,11 +6,11 @@ import type { EntrySignal, SymbolScan } from "../../src/lib/types";
  *
  * Jev هرگز به‌تنهایی پوزیشن باز نمی‌کند — فقط یک قضاوت مشوره است. تصمیم
  * نهایی با ترکیب قضاوت Jev، پیکربندی کاربر و سقف‌های ریسک پورتفو گرفته
- * می‌شود. در هر ابهام یا خطا، گیت fail-closed است: ورود انجام نمی‌شود.
+ * می‌شود. در خطا یا نبود Jev گیت fail-open است (سایز کاهش‌یافته)؛ فقط رد صریح یا ریسک بسیار بالا مسدود می‌کند.
  *
  * ترتیب تصمیم:
  *   ۱) اگر AI غیرفعال است → ورود مجاز است (استراتژی خالص تصمیم می‌گیرد)
- *   ۲) اگر AI فعال ولی توکن نیست → ورود مسدود (fail-closed)
+ *   ۲) اگر AI فعال ولی توکن نیست → ورود بدون گیت
  *   ۳) قضاوت Jev → رد/کاهش سایز/تأیید
  */
 
@@ -27,8 +27,8 @@ export interface AiGateConfig {
 
 export const DEFAULT_AI_GATE: AiGateConfig = {
   aiGateEnabled: true,
-  aiMinDecision: 0.6,
-  aiMaxRiskScore: 3,
+  aiMinDecision: 0.45,
+  aiMaxRiskScore: 4,
   aiReduceFraction: 0.5,
 };
 
@@ -60,14 +60,14 @@ export function interpretJev(
   if (actionLabel === "Reject") {
     return { pass: false, sizeFraction: 0, reason: "AI: رد معامله" };
   }
-  if (actionLabel === "Wait") {
-    return { pass: false, sizeFraction: 0, reason: "AI: انتظار" };
-  }
-  if (analysis.decision < gate.aiMinDecision) {
+  // حالت تهاجمی: «انتظار» یا تصمیم ضعیف فقط سایز را کم می‌کند، ورود را مسدود نمی‌کند.
+  if (actionLabel === "Wait" || analysis.decision < gate.aiMinDecision) {
     return {
-      pass: false,
-      sizeFraction: 0,
-      reason: `AI: تصمیم ضعیف (${(analysis.decision * 100).toFixed(0)}٪)`,
+      pass: true,
+      sizeFraction: gate.aiReduceFraction,
+      reason: actionLabel === "Wait"
+        ? `AI: انتظار — ورود با سایز ${(gate.aiReduceFraction * 100).toFixed(0)}٪`
+        : `AI: تصمیم ضعیف (${(analysis.decision * 100).toFixed(0)}٪) — سایز کاهش یافت`,
     };
   }
   if (actionLabel === "Reduce position") {
@@ -82,7 +82,7 @@ export function interpretJev(
 
 /**
  * گیت کامل AI: تنظیمات + قضاوت Jev + تفسیر.
- * در خطای ارتباطی با Jev، ورود fail-closed مسدود می‌شود.
+ * در خطای ارتباطی با Jev، ورود با سایز کاهش‌یافته انجام می‌شود.
  */
 export async function evaluateAiGate(
   input: AiGateInput,
@@ -97,20 +97,16 @@ export async function evaluateAiGate(
     config = await loadAiConfig();
   } catch (error) {
     return {
-      allowed: false,
-      sizeFraction: 0,
+      allowed: true,
+      sizeFraction: gate.aiReduceFraction,
       analysis: null,
-      reason: `خطا در خواندن تنظیمات AI: ${(error as Error).message}`,
+      reason: `AI در دسترس نیست (${(error as Error).message}) — ورود با سایز کاهش‌یافته`,
     };
   }
 
   if (config.provider !== "jev" || !hasJevToken(config.jevToken)) {
-    return {
-      allowed: false,
-      sizeFraction: 0,
-      analysis: null,
-      reason: "گیت AI فعال است ولی Jev پیکربندی نشده — تنظیمات → تحلیلگر AI",
-    };
+    // Jev پیکربندی نشده: گیت مشاوره‌ای است و استراتژی قطعی بدون آن معامله می‌کند.
+    return { allowed: true, sizeFraction: 1, analysis: null, reason: "Jev پیکربندی نشده — ورود بدون گیت AI" };
   }
 
   let analysis: JevAnalysis;
@@ -124,10 +120,10 @@ export async function evaluateAiGate(
     });
   } catch (error) {
     return {
-      allowed: false,
-      sizeFraction: 0,
+      allowed: true,
+      sizeFraction: gate.aiReduceFraction,
       analysis: null,
-      reason: `خطای Jev: ${(error as Error).message}`,
+      reason: `خطای Jev (${(error as Error).message}) — ورود با سایز کاهش‌یافته`,
     };
   }
 

@@ -33,12 +33,12 @@ describe("تنظیمات ایمنی", () => {
       apiMaxRetries: 99,
       apiRetryDelayMs: 1,
     });
-    expect(cfg.riskPerTradePct).toBe(1);
-    expect(cfg.minConfirmations).toBe(6);
-    expect(cfg.minRR).toBe(1.5);
-    expect(cfg.maxOpenPositions).toBe(4);
-    expect(cfg.maxEngagedCapitalPct).toBe(12);
-    expect(cfg.maxPortfolioRiskPct).toBe(4);
+    expect(cfg.riskPerTradePct).toBe(3);
+    expect(cfg.minConfirmations).toBe(5);
+    expect(cfg.minRR).toBe(1.2);
+    expect(cfg.maxOpenPositions).toBe(8);
+    expect(cfg.maxEngagedCapitalPct).toBe(60);
+    expect(cfg.maxPortfolioRiskPct).toBe(8);
     expect(cfg.apiMinIntervalMs).toBe(12_000);
     expect(cfg.apiMaxRetries).toBe(3);
     expect(cfg.apiRetryDelayMs).toBe(30_000);
@@ -47,18 +47,18 @@ describe("تنظیمات ایمنی", () => {
   it("تنظیمات نسخه قبلی را به پیش‌فرض‌های استراتژی جدید مهاجرت می‌دهد", () => {
     const legacy = { ...DEFAULT_CONFIG } as Partial<typeof DEFAULT_CONFIG>;
     delete legacy.strategyVersion;
-    legacy.riskPerTradePct = 1;
-    legacy.minConfirmations = 6;
-    legacy.minRR = 1.5;
+    legacy.riskPerTradePct = 0.5;
+    legacy.minConfirmations = 7;
+    legacy.minRR = 1.8;
     legacy.partialExitFraction = 0.5;
-    legacy.maxOpenPositions = 4;
+    legacy.maxOpenPositions = 3;
     const migrated = normalizeConfig(legacy);
-    expect(migrated.strategyVersion).toBe(2);
-    expect(migrated.riskPerTradePct).toBe(0.5);
-    expect(migrated.minConfirmations).toBe(7);
-    expect(migrated.minRR).toBe(1.8);
+    expect(migrated.strategyVersion).toBe(3);
+    expect(migrated.riskPerTradePct).toBe(1);
+    expect(migrated.minConfirmations).toBe(6);
+    expect(migrated.minRR).toBe(1.4);
     expect(migrated.partialExitFraction).toBe(0.3);
-    expect(migrated.maxOpenPositions).toBe(3);
+    expect(migrated.maxOpenPositions).toBe(5);
   });
 });
 

@@ -41,7 +41,7 @@ import { computePositionSize, drawdownPct, managePosition, positionEquity, riskS
 const LEGACY_STATE_FILE = "bot-runner.json";
 const stateFile = (mode: BotMode): string => `bot-runner-${mode}.json`;
 const CONFIG_FILE = "bot-runner-config.json";
-const BATCH_SIZE = 2; // نماد جدید در هر tick — سقف زمان تابع serverless
+const MAX_SYMBOLS_PER_TICK = 6; // کل نمادهای هر tick (باز + جدید) — سقف زمان تابع serverless
 const LOCK_MS = 9 * 60_000; // جلوگیری از tick هم‌پوشان (cron موازی)
 const DIGEST_MS = 4 * 3_600_000;
 const TICK_INTERVAL_MS = 10 * 60_000;
@@ -816,8 +816,11 @@ export async function runnerTick(): Promise<TickResult> {
       if (!activeSymbols.has(scannedSymbol)) delete state.scans[scannedSymbol];
     }
     const pool = watch.filter((s) => !openSymbols.includes(s));
-    const slice = pool.slice(state.cursor, state.cursor + BATCH_SIZE);
-    state.cursor = pool.length ? (state.cursor + BATCH_SIZE) % pool.length : 0;
+    // پوزیشن‌های باز هم در هر tick خوانده می‌شوند؛ مجموع نمادها زیر سقف زمان تابع می‌ماند.
+    const batchSize = Math.max(2, MAX_SYMBOLS_PER_TICK - openSymbols.length);
+    const start = pool.length ? state.cursor % pool.length : 0;
+    const slice = pool.slice(start, start + batchSize);
+    state.cursor = pool.length ? (start + batchSize) % pool.length : 0;
     const batch = Array.from(new Set([...openSymbols, ...slice]));
     // برای Grid سی‌روزه، ۷۲۱ کندل مرزی به‌علاوه حاشیهٔ کندل زنده لازم است.
     const hourlyHistoryCount = Math.max(220, cfg.gridLookbackDays * 24 + 2);
